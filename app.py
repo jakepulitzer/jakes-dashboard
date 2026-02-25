@@ -2,7 +2,12 @@ import streamlit as st
 import streamlit.components.v1 as components
 import requests
 import xml.etree.ElementTree as ET
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dotenv import load_dotenv
 from datetime import datetime
+
+load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────
 HEADERS = {
@@ -41,7 +46,20 @@ FEEDS = {
     ],
 }
 
+WEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+
+CITIES = [
+    ("Los Angeles", "Los Angeles,US"),
+    ("Santa Monica", "Santa Monica,US"),
+    ("Calabasas", "Calabasas,US"),
+    ("San Francisco", "San Francisco,US"),
+    ("Boulder", "Boulder,US"),
+    ("Denver", "Denver,US"),
+    ("Silverthorne", "Silverthorne,US"),
+]
+
 # ── Fetch Headlines ───────────────────────────────────────────
+@st.cache_data(ttl=900)
 def get_headlines(url, num=HEADLINES_PER_SOURCE):
     try:
         r = requests.get(url, headers=HEADERS, timeout=10)
@@ -55,6 +73,25 @@ def get_headlines(url, num=HEADLINES_PER_SOURCE):
         return headlines
     except Exception:
         return []
+
+@st.cache_data(ttl=900)
+def get_weather(city_query):
+    try:
+        url = f"https://api.openweathermap.org/data/2.5/weather?q={city_query}&appid={WEATHER_API_KEY}&units=imperial"
+        r = requests.get(url, timeout=10)
+        data = r.json()
+        return {
+            "temp": round(data["main"]["temp"]),
+            "feels_like": round(data["main"]["feels_like"]),
+            "high": round(data["main"]["temp_max"]),
+            "low": round(data["main"]["temp_min"]),
+            "humidity": data["main"]["humidity"],
+            "wind": round(data["wind"]["speed"]),
+            "condition": data["weather"][0]["description"].title(),
+            "icon": data["weather"][0]["icon"],
+        }
+    except Exception:
+        return None
 
 # ── Page Config ───────────────────────────────────────────────
 st.set_page_config(
@@ -89,7 +126,7 @@ def build_section(category, sources):
     sid = section_id(category)
     cards = ""
     for source_name, url in sources:
-        headlines = get_headlines(url)
+        headlines = headline_results.get(url, [])
         items = ""
         if headlines:
             for i, (title, link) in enumerate(headlines, 1):
@@ -121,16 +158,78 @@ def build_section(category, sources):
     </div>"""
 
 # ── Build Pills ───────────────────────────────────────────────
-pills_html = '<div class="pills-bar"><span class="pill active" onclick="filterSection(\'all\', this)">✦ All</span>'
+pills_html = '<div class="pills-bar"><span class="pill active" onclick="filterSection(\'all\', this)">✦ All</span><span class="pill" onclick="filterSection(\'Weather\', this)">⛅ Weather</span>'
 for category in FEEDS.keys():
     sid = section_id(category)
     pills_html += f'<span class="pill" onclick="filterSection(\'{sid}\', this)">{category}</span>'
 pills_html += '</div>'
 
+# ── Fetch Weather Data ────────────────────────────────────────
+# ── Fetch everything in parallel ──────────────────────────────
+def fetch_source(args):
+    source_name, url = args
+    return source_name, url, get_headlines(url)
+
+def fetch_weather_city(args):
+    city_name, city_query = args
+    return city_name, get_weather(city_query)
+
+with ThreadPoolExecutor(max_workers=20) as executor:
+    all_sources = [(name, url) for sources in FEEDS.values() for name, url in sources]
+    headline_futures = {executor.submit(fetch_source, s): s for s in all_sources}
+    weather_futures = {executor.submit(fetch_weather_city, c): c for c in CITIES}
+    
+    headline_results = {}
+    for future in as_completed(headline_futures):
+        source_name, url, headlines = future.result()
+        headline_results[url] = headlines
+    
+    weather_collected = {}
+    for future in as_completed(weather_futures):
+        city_name, w = future.result()
+        weather_collected[city_name] = w
+    weather_data = [(city_name, weather_collected.get(city_name)) for city_name, _ in CITIES]
+
 # ── Build Sections ────────────────────────────────────────────
 sections_html = ""
 for category, sources in FEEDS.items():
     sections_html += build_section(category, sources)
+
+# ── Build Weather HTML ────────────────────────────────────────
+weather_cards = ""
+for city_name, w in weather_data:
+    if w:
+        icon_url = f"https://openweathermap.org/img/wn/{w['icon']}@2x.png"
+        weather_cards += f"""
+        <div class="weather-card">
+            <div class="weather-city">{city_name}</div>
+            <div class="weather-main">
+                <img src="{icon_url}" class="weather-icon" />
+                <span class="weather-temp">{w['temp']}°</span>
+            </div>
+            <div class="weather-condition">{w['condition']}</div>
+            <div class="weather-details">
+                <span>↑ {w['high']}° ↓ {w['low']}°</span>
+                <span>💨 {w['wind']} mph</span>
+            </div>
+        </div>"""
+    else:
+        weather_cards += f"""
+        <div class="weather-card">
+            <div class="weather-city">{city_name}</div>
+            <div class="no-feed">Unavailable</div>
+        </div>"""
+
+weather_section = f"""
+<div class="section" id="section-Weather" data-section="Weather">
+    <div class="section-header" onclick="toggleSection('Weather')">
+        <span class="section-label">⛅ Weather</span>
+        <span class="section-toggle" id="toggle-Weather">&#9662;</span>
+    </div>
+    <div class="section-content" id="content-Weather">
+        <div class="weather-grid">{weather_cards}</div>
+    </div>
+</div>"""
 
 # ── Full HTML Page ────────────────────────────────────────────
 html = f"""
@@ -325,6 +424,83 @@ body {{
     color: #2e2e2e;
     padding: 0.5rem 0;
 }}
+/* Weather */
+.weather-grid {{
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 1rem;
+    margin-bottom: 1rem;
+}}
+
+.weather-card {{
+    background: #111;
+    border: 1px solid #1e1e1e;
+    border-radius: 2px;
+    padding: 1.2rem 1rem;
+    text-align: center;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s, background 0.2s;
+}}
+
+.weather-card::before {{
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #c9a84c, transparent);
+    opacity: 0;
+    transition: opacity 0.2s;
+}}
+
+.weather-card:hover {{ background: #161616; border-color: #333; }}
+.weather-card:hover::before {{ opacity: 1; }}
+
+.weather-city {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.62rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: #444;
+    margin-bottom: 0.5rem;
+}}
+
+.weather-main {{
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.2rem;
+}}
+
+.weather-icon {{
+    width: 48px;
+    height: 48px;
+}}
+
+.weather-temp {{
+    font-family: 'Playfair Display', serif;
+    font-size: 2rem;
+    font-weight: 700;
+    color: #f5f3ee;
+}}
+
+.weather-condition {{
+    font-size: 0.75rem;
+    color: #666;
+    margin-bottom: 0.6rem;
+    margin-top: 0.1rem;
+}}
+
+.weather-details {{
+    display: flex;
+    justify-content: space-between;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.6rem;
+    color: #555;
+    border-top: 1px solid #1a1a1a;
+    padding-top: 0.5rem;
+    margin-top: 0.3rem;
+}}
 </style>
 </head>
 <body>
@@ -339,6 +515,8 @@ body {{
 </div>
 
 {pills_html}
+
+{weather_section}
 
 {sections_html}
 
