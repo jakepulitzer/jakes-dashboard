@@ -3,6 +3,7 @@ import streamlit.components.v1 as components
 import requests
 import xml.etree.ElementTree as ET
 import os
+import pytz
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 from datetime import datetime
@@ -109,7 +110,11 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Helpers ───────────────────────────────────────────────────
-now = datetime.now()
+from datetime import datetime
+import pytz
+
+pacific = pytz.timezone("America/Los_Angeles")
+now = datetime.now(pacific)
 
 def section_id(category):
     replacements = {
