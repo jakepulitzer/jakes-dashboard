@@ -54,11 +54,10 @@ FEEDS = {
 WEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
-DRIVE_ORIGIN = "4500 Park Granada, Calabasas, CA"
 DRIVE_ROUTES = [
-    ("Brentwood", "11836 Gorham Ave, Brentwood, CA"),
-    ("Malibu Pier", "Malibu Pier, Malibu, CA"),
-    ("Venice Beach", "Venice Beach, Venice, CA"),
+    ("Calabasas → Brentwood", "4500 Park Granada, Calabasas, CA", "11836 Gorham Ave, Brentwood, CA"),
+    ("Brentwood → Malibu Pier", "11836 Gorham Ave, Brentwood, CA", "Malibu Pier, Malibu, CA"),
+    ("Brentwood → Venice Beach", "11836 Gorham Ave, Brentwood, CA", "Venice Beach, Venice, CA"),
 ]
 
 GMAIL_ADDRESS = os.getenv("GMAIL_ADDRESS")
@@ -175,22 +174,22 @@ def get_drive_time():
     if not GOOGLE_MAPS_API_KEY:
         return None, "Set GOOGLE_MAPS_API_KEY in .env"
     try:
-        destinations = "|".join(addr for _, addr in DRIVE_ROUTES)
-        params = {
-            "origins": DRIVE_ORIGIN,
-            "destinations": destinations,
-            "departure_time": "now",
-            "traffic_model": "best_guess",
-            "units": "imperial",
-            "key": GOOGLE_MAPS_API_KEY,
-        }
-        r = requests.get("https://maps.googleapis.com/maps/api/distancematrix/json", params=params, timeout=10)
-        data = r.json()
-        if data.get("status") != "OK":
-            return None, f"Maps API error: {data.get('status')}"
-        elements = data["rows"][0]["elements"]
         routes = []
-        for (label, _), element in zip(DRIVE_ROUTES, elements):
+        for label, origin, destination in DRIVE_ROUTES:
+            params = {
+                "origins": origin,
+                "destinations": destination,
+                "departure_time": "now",
+                "traffic_model": "best_guess",
+                "units": "imperial",
+                "key": GOOGLE_MAPS_API_KEY,
+            }
+            r = requests.get("https://maps.googleapis.com/maps/api/distancematrix/json", params=params, timeout=10)
+            data = r.json()
+            if data.get("status") != "OK":
+                routes.append({"label": label, "error": True})
+                continue
+            element = data["rows"][0]["elements"][0]
             if element["status"] != "OK":
                 routes.append({"label": label, "error": True})
                 continue
@@ -241,7 +240,7 @@ def build_drive_section(drive_data, error):
     return f"""
 <div class="section" id="section-Drive" data-section="Drive">
     <div class="section-header" onclick="toggleSection('Drive')">
-        <span class="section-label">🚗 Drive Home</span>
+        <span class="section-label">🚗 Fuckin Traffic</span>
         <span class="section-toggle" id="toggle-Drive">&#9662;</span>
     </div>
     <div class="section-content" id="content-Drive">
@@ -511,7 +510,7 @@ def build_section(category, sources):
     </div>"""
 
 # ── Build Pills ───────────────────────────────────────────────
-pills_html = '<div class="pills-bar"><span class="pill active" onclick="filterSection(\'all\', this)">✦ All</span><span class="pill" onclick="filterSection(\'Drive\', this)">🚗 Drive</span><span class="pill" onclick="filterSection(\'Gmail\', this)">✉️ Gmail</span><span class="pill" onclick="filterSection(\'Portfolio\', this)">📈 Portfolio</span><span class="pill" onclick="filterSection(\'Weather\', this)">⛅ Weather</span>'
+pills_html = '<div class="pills-bar"><span class="pill active" onclick="filterSection(\'all\', this)">✦ All</span><span class="pill" onclick="filterSection(\'Drive\', this)">🚗 Traffic</span><span class="pill" onclick="filterSection(\'Gmail\', this)">✉️ Gmail</span><span class="pill" onclick="filterSection(\'Portfolio\', this)">📈 Portfolio</span><span class="pill" onclick="filterSection(\'Weather\', this)">⛅ Weather</span>'
 for category in FEEDS.keys():
     sid = section_id(category)
     pills_html += f'<span class="pill" onclick="filterSection(\'{sid}\', this)">{category}</span>'
