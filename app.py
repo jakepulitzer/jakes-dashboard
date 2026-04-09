@@ -213,20 +213,56 @@ DASHBOARD_PASSWORD = st.secrets.get("DASHBOARD_PASSWORD") or os.getenv("DASHBOAR
 
 if DASHBOARD_PASSWORD:
     if not st.session_state.get("authenticated"):
+        wrong = st.session_state.get("wrong_password", False)
         st.markdown("""
         <style>
-        .auth-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 80vh; }
-        .auth-title { font-family: 'Georgia', serif; font-size: 2rem; color: #f5f3ee; margin-bottom: 1.5rem; }
+        .stApp, section[data-testid="stMain"], .stMainBlockContainer {
+            background: #ffffff !important;
+        }
+        .block-container {
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: center !important;
+            justify-content: center !important;
+            min-height: 90vh !important;
+            padding-top: 0 !important;
+        }
+        div[data-testid="stTextInput"] input {
+            text-align: center;
+            font-size: 1.2rem;
+            border: 3px solid #000 !important;
+            border-radius: 0 !important;
+            background: #fff !important;
+            color: #000 !important;
+            padding: 0.6rem 1rem !important;
+        }
+        div[data-testid="stTextInput"] { max-width: 260px; margin: 0 auto; }
         </style>
-        <div class="auth-wrap"><div class="auth-title">Jake's Daily Dashboard</div></div>
         """, unsafe_allow_html=True)
-        pwd = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Enter password")
+
+        if wrong:
+            st.markdown("""
+            <div style="text-align:center; margin-bottom:1.5rem;">
+                <div style="font-size:8rem; line-height:1;">🦕</div>
+                <div style="font-family:'Arial Black',sans-serif; font-size:4rem; font-weight:900; color:#000; letter-spacing:-2px; margin-top:0.5rem;">STUPID</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="text-align:center; margin-bottom:1.5rem;">
+                <div style="font-family:'Arial Black',sans-serif; font-size:2.8rem; font-weight:900; color:#000; letter-spacing:-1px; line-height:1.1;">ENTER FUCKIN<br>PASSWORD</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        pwd = st.text_input("", type="password", label_visibility="collapsed", placeholder="••••••••")
         if pwd:
             if pwd == DASHBOARD_PASSWORD:
                 st.session_state["authenticated"] = True
+                st.session_state["wrong_password"] = False
                 st.rerun()
             else:
-                st.error("Incorrect password")
+                st.session_state["wrong_password"] = True
+                st.rerun()
         st.stop()
 
 # ── Helpers ───────────────────────────────────────────────────
