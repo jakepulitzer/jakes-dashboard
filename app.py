@@ -363,28 +363,25 @@ for category, sources in FEEDS.items():
 
 # ── Build Weather Treemap ─────────────────────────────────────
 def temp_to_colors(temp):
-    """Return (bg_color, text_color) based on temperature in °F."""
-    if temp >= 100: return "#7f0000", "#ffcdd2"
-    if temp >= 90:  return "#c62828", "#ffcdd2"
-    if temp >= 80:  return "#e64a19", "#ffe3d0"
-    if temp >= 70:  return "#ef8c00", "#fff8e1"
-    if temp >= 60:  return "#2e7d32", "#dcedc8"
-    if temp >= 50:  return "#0277bd", "#e1f5fe"
-    if temp >= 40:  return "#1565c0", "#bbdefb"
-    if temp >= 30:  return "#283593", "#c5cae9"
-    return "#1a237e", "#c5cae9"
+    """Return (bg_color, text_color) based on temperature in °F — muted palette."""
+    if temp >= 100: return "#3d1a1a", "#c9a09a"
+    if temp >= 90:  return "#3d2218", "#c9a48a"
+    if temp >= 80:  return "#3a2a14", "#c9b080"
+    if temp >= 70:  return "#2a3018", "#a0b87a"
+    if temp >= 60:  return "#1a2e20", "#7aaa88"
+    if temp >= 50:  return "#162535", "#7aA0c0"
+    if temp >= 40:  return "#121e30", "#6e90b8"
+    if temp >= 30:  return "#101828", "#7080b0"
+    return "#0d1420", "#6878a8"
 
 weather_tiles = ""
 for city_name, w in weather_data:
     if not w:
-        weather_tiles += f'<div class="wtile wtile-sm"><div class="wtile-city">{city_name}</div><div class="wtile-na">—</div></div>'
+        weather_tiles += f'<div class="wtile"><div class="wtile-city">{city_name}</div><div class="wtile-na">—</div></div>'
         continue
     bg, fg = temp_to_colors(w["temp"])
-    # bigger span for more extreme temps (far from comfortable 65°F)
-    deviation = abs(w["temp"] - 65)
-    span = "wtile-lg" if deviation >= 25 else ("wtile-md" if deviation >= 12 else "wtile-sm")
     weather_tiles += f"""
-    <div class="wtile {span}" style="background:{bg}; color:{fg};">
+    <div class="wtile" style="background:{bg}; color:{fg};">
         <div class="wtile-city">{city_name}</div>
         <div class="wtile-temp">{w['temp']}°</div>
         <div class="wtile-cond">{w['condition']}</div>
@@ -597,11 +594,10 @@ body {{
 }}
 /* Weather Treemap */
 .weather-treemap {{
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
     gap: 0.5rem;
     margin-bottom: 1rem;
-    align-items: stretch;
 }}
 
 .wtile {{
@@ -612,41 +608,36 @@ body {{
     justify-content: space-between;
     transition: filter 0.2s, transform 0.15s;
     cursor: default;
-    min-height: 90px;
+    min-height: 100px;
     overflow: hidden;
 }}
-.wtile:hover {{ filter: brightness(1.15); transform: scale(1.02); }}
-
-.wtile-sm  {{ flex: 1 1 120px; min-height: 90px; }}
-.wtile-md  {{ flex: 2 1 200px; min-height: 110px; }}
-.wtile-lg  {{ flex: 3 1 280px; min-height: 130px; }}
+.wtile:hover {{ filter: brightness(1.2); transform: scale(1.02); }}
 
 .wtile-city {{
     font-family: 'DM Mono', monospace;
     font-size: 0.58rem;
     letter-spacing: 0.15em;
     text-transform: uppercase;
-    opacity: 0.75;
+    opacity: 0.6;
     margin-bottom: 0.3rem;
 }}
 .wtile-temp {{
     font-family: 'Playfair Display', serif;
     font-weight: 700;
-    font-size: 2.4rem;
+    font-size: 2.2rem;
     line-height: 1;
     margin-bottom: 0.2rem;
 }}
-.wtile-lg .wtile-temp {{ font-size: 3rem; }}
 .wtile-cond {{
-    font-size: 0.7rem;
-    opacity: 0.8;
+    font-size: 0.65rem;
+    opacity: 0.7;
     margin-bottom: 0.3rem;
 }}
 .wtile-detail {{
     font-family: 'DM Mono', monospace;
-    font-size: 0.55rem;
-    opacity: 0.65;
-    border-top: 1px solid rgba(255,255,255,0.15);
+    font-size: 0.52rem;
+    opacity: 0.5;
+    border-top: 1px solid rgba(255,255,255,0.08);
     padding-top: 0.4rem;
     margin-top: auto;
 }}
@@ -752,7 +743,7 @@ body {{
         font-size: 0.62rem;
         line-height: 1.6;
     }}
-    .wtile-sm, .wtile-md, .wtile-lg {{ flex: 1 1 140px; min-height: 90px; }}
+    .weather-treemap {{ grid-template-columns: repeat(2, 1fr); }}
     .cols-2, .cols-3, .cols-4 {{
         grid-template-columns: 1fr;
     }}
@@ -783,12 +774,11 @@ body {{
     .masthead-title {{
         font-size: 1.7rem;
     }}
-    .wtile-sm, .wtile-md, .wtile-lg {{ flex: 1 1 140px; min-height: 90px; }}
+    .weather-treemap {{ grid-template-columns: repeat(2, 1fr); }}
     .schwab-grid {{
         grid-template-columns: 1fr 1fr;
     }}
-    .wtile-temp {{ font-size: 1.8rem; }}
-    .wtile-lg .wtile-temp {{ font-size: 2.2rem; }}
+    .wtile-temp {{ font-size: 1.6rem; }}
 }}
 </style>
 </head>
