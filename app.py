@@ -361,30 +361,35 @@ sections_html = ""
 for category, sources in FEEDS.items():
     sections_html += build_section(category, sources)
 
-# ── Build Weather HTML ────────────────────────────────────────
-weather_cards = ""
+# ── Build Weather Treemap ─────────────────────────────────────
+def temp_to_colors(temp):
+    """Return (bg_color, text_color) based on temperature in °F."""
+    if temp >= 100: return "#7f0000", "#ffcdd2"
+    if temp >= 90:  return "#c62828", "#ffcdd2"
+    if temp >= 80:  return "#e64a19", "#ffe3d0"
+    if temp >= 70:  return "#ef8c00", "#fff8e1"
+    if temp >= 60:  return "#2e7d32", "#dcedc8"
+    if temp >= 50:  return "#0277bd", "#e1f5fe"
+    if temp >= 40:  return "#1565c0", "#bbdefb"
+    if temp >= 30:  return "#283593", "#c5cae9"
+    return "#1a237e", "#c5cae9"
+
+weather_tiles = ""
 for city_name, w in weather_data:
-    if w:
-        icon_url = f"https://openweathermap.org/img/wn/{w['icon']}@2x.png"
-        weather_cards += f"""
-        <div class="weather-card">
-            <div class="weather-city">{city_name}</div>
-            <div class="weather-main">
-                <img src="{icon_url}" class="weather-icon" />
-                <span class="weather-temp">{w['temp']}°</span>
-            </div>
-            <div class="weather-condition">{w['condition']}</div>
-            <div class="weather-details">
-                <span>↑ {w['high']}° ↓ {w['low']}°</span>
-                <span>💨 {w['wind']} mph</span>
-            </div>
-        </div>"""
-    else:
-        weather_cards += f"""
-        <div class="weather-card">
-            <div class="weather-city">{city_name}</div>
-            <div class="no-feed">Unavailable</div>
-        </div>"""
+    if not w:
+        weather_tiles += f'<div class="wtile wtile-sm"><div class="wtile-city">{city_name}</div><div class="wtile-na">—</div></div>'
+        continue
+    bg, fg = temp_to_colors(w["temp"])
+    # bigger span for more extreme temps (far from comfortable 65°F)
+    deviation = abs(w["temp"] - 65)
+    span = "wtile-lg" if deviation >= 25 else ("wtile-md" if deviation >= 12 else "wtile-sm")
+    weather_tiles += f"""
+    <div class="wtile {span}" style="background:{bg}; color:{fg};">
+        <div class="wtile-city">{city_name}</div>
+        <div class="wtile-temp">{w['temp']}°</div>
+        <div class="wtile-cond">{w['condition']}</div>
+        <div class="wtile-detail">↑{w['high']}° ↓{w['low']}° · {w['wind']}mph</div>
+    </div>"""
 
 weather_section = f"""
 <div class="section" id="section-Weather" data-section="Weather">
@@ -393,7 +398,7 @@ weather_section = f"""
         <span class="section-toggle" id="toggle-Weather">&#9662;</span>
     </div>
     <div class="section-content" id="content-Weather">
-        <div class="weather-grid">{weather_cards}</div>
+        <div class="weather-treemap">{weather_tiles}</div>
     </div>
 </div>"""
 
@@ -590,82 +595,65 @@ body {{
     color: #2e2e2e;
     padding: 0.5rem 0;
 }}
-/* Weather */
-.weather-grid {{
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
-    gap: 1rem;
+/* Weather Treemap */
+.weather-treemap {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
     margin-bottom: 1rem;
+    align-items: stretch;
 }}
 
-.weather-card {{
-    background: #111;
-    border: 1px solid #1e1e1e;
-    border-radius: 2px;
-    padding: 1.2rem 1rem;
-    text-align: center;
-    position: relative;
+.wtile {{
+    border-radius: 3px;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: filter 0.2s, transform 0.15s;
+    cursor: default;
+    min-height: 90px;
     overflow: hidden;
-    transition: border-color 0.2s, background 0.2s;
 }}
+.wtile:hover {{ filter: brightness(1.15); transform: scale(1.02); }}
 
-.weather-card::before {{
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, #c9a84c, transparent);
-    opacity: 0;
-    transition: opacity 0.2s;
-}}
+.wtile-sm  {{ flex: 1 1 120px; min-height: 90px; }}
+.wtile-md  {{ flex: 2 1 200px; min-height: 110px; }}
+.wtile-lg  {{ flex: 3 1 280px; min-height: 130px; }}
 
-.weather-card:hover {{ background: #161616; border-color: #333; }}
-.weather-card:hover::before {{ opacity: 1; }}
-
-.weather-city {{
+.wtile-city {{
     font-family: 'DM Mono', monospace;
-    font-size: 0.62rem;
+    font-size: 0.58rem;
     letter-spacing: 0.15em;
     text-transform: uppercase;
-    color: #444;
-    margin-bottom: 0.5rem;
+    opacity: 0.75;
+    margin-bottom: 0.3rem;
 }}
-
-.weather-main {{
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.2rem;
-}}
-
-.weather-icon {{
-    width: 48px;
-    height: 48px;
-}}
-
-.weather-temp {{
+.wtile-temp {{
     font-family: 'Playfair Display', serif;
-    font-size: 2rem;
     font-weight: 700;
-    color: #f5f3ee;
+    font-size: 2.4rem;
+    line-height: 1;
+    margin-bottom: 0.2rem;
 }}
-
-.weather-condition {{
-    font-size: 0.75rem;
-    color: #666;
-    margin-bottom: 0.6rem;
-    margin-top: 0.1rem;
+.wtile-lg .wtile-temp {{ font-size: 3rem; }}
+.wtile-cond {{
+    font-size: 0.7rem;
+    opacity: 0.8;
+    margin-bottom: 0.3rem;
 }}
-
-.weather-details {{
-    display: flex;
-    justify-content: space-between;
+.wtile-detail {{
     font-family: 'DM Mono', monospace;
-    font-size: 0.6rem;
-    color: #555;
-    border-top: 1px solid #1a1a1a;
-    padding-top: 0.5rem;
-    margin-top: 0.3rem;
+    font-size: 0.55rem;
+    opacity: 0.65;
+    border-top: 1px solid rgba(255,255,255,0.15);
+    padding-top: 0.4rem;
+    margin-top: auto;
+}}
+.wtile-na {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.7rem;
+    opacity: 0.4;
 }}
 
 /* Portfolio */
@@ -764,9 +752,7 @@ body {{
         font-size: 0.62rem;
         line-height: 1.6;
     }}
-    .weather-grid {{
-        grid-template-columns: repeat(2, 1fr);
-    }}
+    .wtile-sm, .wtile-md, .wtile-lg {{ flex: 1 1 140px; min-height: 90px; }}
     .cols-2, .cols-3, .cols-4 {{
         grid-template-columns: 1fr;
     }}
@@ -797,19 +783,12 @@ body {{
     .masthead-title {{
         font-size: 1.7rem;
     }}
-    .weather-grid {{
-        grid-template-columns: repeat(2, 1fr);
-    }}
+    .wtile-sm, .wtile-md, .wtile-lg {{ flex: 1 1 140px; min-height: 90px; }}
     .schwab-grid {{
         grid-template-columns: 1fr 1fr;
     }}
-    .weather-temp {{
-        font-size: 1.6rem;
-    }}
-    .weather-icon {{
-        width: 36px;
-        height: 36px;
-    }}
+    .wtile-temp {{ font-size: 1.8rem; }}
+    .wtile-lg .wtile-temp {{ font-size: 2.2rem; }}
 }}
 </style>
 </head>
