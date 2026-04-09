@@ -745,6 +745,72 @@ body {{
     padding-top: 0.5rem;
     margin-top: 0.2rem;
 }}
+
+/* ── Mobile ───────────────────────────────────────────────── */
+@media (max-width: 768px) {{
+    body {{
+        padding: 1rem 1rem;
+    }}
+    .masthead {{
+        flex-direction: column;
+        gap: 0.4rem;
+        padding: 1rem 0 0.8rem;
+    }}
+    .masthead-title {{
+        font-size: 2rem;
+    }}
+    .masthead-meta {{
+        text-align: left;
+        font-size: 0.62rem;
+        line-height: 1.6;
+    }}
+    .weather-grid {{
+        grid-template-columns: repeat(2, 1fr);
+    }}
+    .cols-2, .cols-3, .cols-4 {{
+        grid-template-columns: 1fr;
+    }}
+    .schwab-grid {{
+        grid-template-columns: repeat(2, 1fr);
+    }}
+    .pills-bar {{
+        gap: 0.4rem;
+        margin-bottom: 1.2rem;
+        padding-bottom: 1rem;
+    }}
+    .pill {{
+        font-size: 0.6rem;
+        padding: 0.3rem 0.7rem;
+    }}
+    .section-label {{
+        font-size: 0.6rem;
+    }}
+    .headline-item a {{
+        font-size: 0.82rem;
+    }}
+}}
+
+@media (max-width: 480px) {{
+    body {{
+        padding: 0.75rem;
+    }}
+    .masthead-title {{
+        font-size: 1.7rem;
+    }}
+    .weather-grid {{
+        grid-template-columns: repeat(2, 1fr);
+    }}
+    .schwab-grid {{
+        grid-template-columns: 1fr 1fr;
+    }}
+    .weather-temp {{
+        font-size: 1.6rem;
+    }}
+    .weather-icon {{
+        width: 36px;
+        height: 36px;
+    }}
+}}
 </style>
 </head>
 <body>
@@ -788,4 +854,4 @@ function toggleSection(sid) {{
 </html>
 """
 
-components.html(html, height=9000, scrolling=True)
+components.html(html, height=18000, scrolling=True)
