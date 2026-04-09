@@ -208,6 +208,27 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# ── Password Gate ─────────────────────────────────────────────
+DASHBOARD_PASSWORD = st.secrets.get("DASHBOARD_PASSWORD") or os.getenv("DASHBOARD_PASSWORD")
+
+if DASHBOARD_PASSWORD:
+    if not st.session_state.get("authenticated"):
+        st.markdown("""
+        <style>
+        .auth-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 80vh; }
+        .auth-title { font-family: 'Georgia', serif; font-size: 2rem; color: #f5f3ee; margin-bottom: 1.5rem; }
+        </style>
+        <div class="auth-wrap"><div class="auth-title">Jake's Daily Dashboard</div></div>
+        """, unsafe_allow_html=True)
+        pwd = st.text_input("Password", type="password", label_visibility="collapsed", placeholder="Enter password")
+        if pwd:
+            if pwd == DASHBOARD_PASSWORD:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Incorrect password")
+        st.stop()
+
 # ── Helpers ───────────────────────────────────────────────────
 from datetime import datetime
 import pytz
