@@ -10,6 +10,10 @@ from datetime import datetime
 
 load_dotenv()
 
+SCHWAB_APP_KEY = os.getenv("SCHWAB_APP_KEY")
+SCHWAB_APP_SECRET = os.getenv("SCHWAB_APP_SECRET")
+SCHWAB_TOKEN_PATH = os.path.join(os.path.dirname(__file__), "token.json")
+
 # ── Config ────────────────────────────────────────────────────
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -58,6 +62,101 @@ CITIES = [
     ("Denver", "Denver,US"),
     ("Silverthorne", "Silverthorne,US"),
 ]
+
+# ── Schwab Positions ──────────────────────────────────────────
+@st.cache_data(ttl=300)
+def get_schwab_positions():
+    try:
+        import schwab
+        if not SCHWAB_APP_KEY or not SCHWAB_APP_SECRET:
+            return None, "Schwab credentials not set in .env"
+        if not os.path.exists(SCHWAB_TOKEN_PATH):
+            return None, "Run setup_schwab_auth.py first to authenticate"
+
+        client = schwab.auth.client_from_token_file(
+            token_path=SCHWAB_TOKEN_PATH,
+            api_key=SCHWAB_APP_KEY,
+            app_secret=SCHWAB_APP_SECRET,
+        )
+        resp = client.get_accounts(fields=[schwab.client.Client.Account.Fields.POSITIONS])
+        resp.raise_for_status()
+        accounts = resp.json()
+
+        positions = []
+        for account in accounts:
+            acct = account.get("securitiesAccount", {})
+            for pos in acct.get("positions", []):
+                instrument = pos.get("instrument", {})
+                symbol = instrument.get("symbol", "")
+                if not symbol or instrument.get("assetType") == "CASH_EQUIVALENT":
+                    continue
+                qty = pos.get("longQuantity", 0)
+                avg_price = pos.get("averageLongPrice") or pos.get("averagePrice", 0)
+                market_value = pos.get("marketValue", 0)
+                day_pl = pos.get("currentDayProfitLoss", 0)
+                day_pl_pct = pos.get("currentDayProfitLossPercentage", 0)
+                total_pl = pos.get("longOpenProfitLoss", 0)
+                current_price = market_value / qty if qty else 0
+                total_pl_pct = ((market_value - (avg_price * qty)) / (avg_price * qty) * 100) if avg_price and qty else 0
+                positions.append({
+                    "symbol": symbol,
+                    "description": instrument.get("description", ""),
+                    "qty": qty,
+                    "avg_price": avg_price,
+                    "current_price": current_price,
+                    "market_value": market_value,
+                    "day_pl": day_pl,
+                    "day_pl_pct": day_pl_pct,
+                    "total_pl": total_pl,
+                    "total_pl_pct": total_pl_pct,
+                })
+
+        positions.sort(key=lambda x: x["market_value"], reverse=True)
+        return positions, None
+    except ImportError:
+        return None, "schwab-py not installed — run: pip install schwab-py"
+    except Exception as e:
+        return None, str(e)
+
+
+def build_schwab_section(positions, error):
+    if error:
+        content = f'<div class="no-feed">{error}</div>'
+    elif not positions:
+        content = '<div class="no-feed">No positions found</div>'
+    else:
+        cards = ""
+        for p in positions:
+            day_color = "#4caf80" if p["day_pl"] >= 0 else "#e05c5c"
+            total_color = "#4caf80" if p["total_pl"] >= 0 else "#e05c5c"
+            day_sign = "+" if p["day_pl"] >= 0 else ""
+            total_sign = "+" if p["total_pl"] >= 0 else ""
+            desc = p["description"][:28] + "…" if len(p["description"]) > 28 else p["description"]
+            cards += f"""
+            <div class="schwab-card">
+                <div class="schwab-symbol">{p["symbol"]}</div>
+                <div class="schwab-desc">{desc}</div>
+                <div class="schwab-price">${p["current_price"]:,.2f}</div>
+                <div class="schwab-value">${p["market_value"]:,.0f} &nbsp;<span class="schwab-qty">{p["qty"]:g} shares</span></div>
+                <div class="schwab-pl-row">
+                    <span style="color:{day_color}">{day_sign}${p["day_pl"]:,.2f} today</span>
+                    <span style="color:{total_color}">{total_sign}{p["total_pl_pct"]:.1f}% total</span>
+                </div>
+            </div>"""
+
+        content = f'<div class="schwab-grid">{cards}</div>'
+
+    return f"""
+<div class="section" id="section-Portfolio" data-section="Portfolio">
+    <div class="section-header" onclick="toggleSection('Portfolio')">
+        <span class="section-label">📈 Portfolio</span>
+        <span class="section-toggle" id="toggle-Portfolio">&#9662;</span>
+    </div>
+    <div class="section-content" id="content-Portfolio">
+        {content}
+    </div>
+</div>"""
+
 
 # ── Fetch Headlines ───────────────────────────────────────────
 @st.cache_data(ttl=900)
@@ -163,13 +262,12 @@ def build_section(category, sources):
     </div>"""
 
 # ── Build Pills ───────────────────────────────────────────────
-pills_html = '<div class="pills-bar"><span class="pill active" onclick="filterSection(\'all\', this)">✦ All</span><span class="pill" onclick="filterSection(\'Weather\', this)">⛅ Weather</span>'
+pills_html = '<div class="pills-bar"><span class="pill active" onclick="filterSection(\'all\', this)">✦ All</span><span class="pill" onclick="filterSection(\'Portfolio\', this)">📈 Portfolio</span><span class="pill" onclick="filterSection(\'Weather\', this)">⛅ Weather</span>'
 for category in FEEDS.keys():
     sid = section_id(category)
     pills_html += f'<span class="pill" onclick="filterSection(\'{sid}\', this)">{category}</span>'
 pills_html += '</div>'
 
-# ── Fetch Weather Data ────────────────────────────────────────
 # ── Fetch everything in parallel ──────────────────────────────
 def fetch_source(args):
     source_name, url = args
@@ -183,17 +281,23 @@ with ThreadPoolExecutor(max_workers=20) as executor:
     all_sources = [(name, url) for sources in FEEDS.values() for name, url in sources]
     headline_futures = {executor.submit(fetch_source, s): s for s in all_sources}
     weather_futures = {executor.submit(fetch_weather_city, c): c for c in CITIES}
-    
+    schwab_future = executor.submit(get_schwab_positions)
+
     headline_results = {}
     for future in as_completed(headline_futures):
         source_name, url, headlines = future.result()
         headline_results[url] = headlines
-    
+
     weather_collected = {}
     for future in as_completed(weather_futures):
         city_name, w = future.result()
         weather_collected[city_name] = w
     weather_data = [(city_name, weather_collected.get(city_name)) for city_name, _ in CITIES]
+
+    schwab_positions, schwab_error = schwab_future.result()
+
+# ── Build Portfolio Section ───────────────────────────────────
+portfolio_section = build_schwab_section(schwab_positions, schwab_error)
 
 # ── Build Sections ────────────────────────────────────────────
 sections_html = ""
@@ -506,6 +610,84 @@ body {{
     padding-top: 0.5rem;
     margin-top: 0.3rem;
 }}
+
+/* Portfolio */
+.schwab-grid {{
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1rem;
+}}
+
+.schwab-card {{
+    background: #111;
+    border: 1px solid #1e1e1e;
+    border-radius: 2px;
+    padding: 1.1rem 1rem;
+    position: relative;
+    overflow: hidden;
+    transition: border-color 0.2s, background 0.2s;
+}}
+
+.schwab-card::before {{
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #c9a84c, transparent);
+    opacity: 0;
+    transition: opacity 0.2s;
+}}
+
+.schwab-card:hover {{ background: #161616; border-color: #333; }}
+.schwab-card:hover::before {{ opacity: 1; }}
+
+.schwab-symbol {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #c9a84c;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.15rem;
+}}
+
+.schwab-desc {{
+    font-size: 0.65rem;
+    color: #444;
+    margin-bottom: 0.6rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}}
+
+.schwab-price {{
+    font-family: 'Playfair Display', serif;
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: #f5f3ee;
+    margin-bottom: 0.15rem;
+}}
+
+.schwab-value {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    color: #666;
+    margin-bottom: 0.5rem;
+}}
+
+.schwab-qty {{
+    color: #444;
+}}
+
+.schwab-pl-row {{
+    display: flex;
+    justify-content: space-between;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.6rem;
+    border-top: 1px solid #1a1a1a;
+    padding-top: 0.5rem;
+    margin-top: 0.2rem;
+}}
 </style>
 </head>
 <body>
@@ -520,6 +702,8 @@ body {{
 </div>
 
 {pills_html}
+
+{portfolio_section}
 
 {weather_section}
 
