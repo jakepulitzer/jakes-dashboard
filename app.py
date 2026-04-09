@@ -53,6 +53,13 @@ FEEDS = {
 
 WEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+DRIVE_ORIGIN = "4500 Park Granada, Calabasas, CA"
+DRIVE_DESTINATION = "11836 Gorham Ave, Brentwood, CA"
+
+GMAIL_ADDRESS = os.getenv("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
+
 CITIES = [
     ("Los Angeles", "Los Angeles,US"),
     ("Santa Monica", "Santa Monica,US"),
@@ -153,6 +160,174 @@ def build_schwab_section(positions, error):
         <span class="section-toggle" id="toggle-Portfolio">&#9662;</span>
     </div>
     <div class="section-content" id="content-Portfolio">
+        {content}
+    </div>
+</div>"""
+
+
+# ── Drive Time ────────────────────────────────────────────────
+@st.cache_data(ttl=600)
+def get_drive_time():
+    if not GOOGLE_MAPS_API_KEY:
+        return None, "Set GOOGLE_MAPS_API_KEY in .env"
+    try:
+        params = {
+            "origins": DRIVE_ORIGIN,
+            "destinations": DRIVE_DESTINATION,
+            "departure_time": "now",
+            "traffic_model": "best_guess",
+            "key": GOOGLE_MAPS_API_KEY,
+        }
+        r = requests.get("https://maps.googleapis.com/maps/api/distancematrix/json", params=params, timeout=10)
+        data = r.json()
+        if data.get("status") != "OK":
+            return None, f"Maps API error: {data.get('status')}"
+        element = data["rows"][0]["elements"][0]
+        if element["status"] != "OK":
+            return None, "Route not found"
+        duration_traffic = element.get("duration_in_traffic", element.get("duration", {})).get("value", 0)
+        duration_normal = element.get("duration", {}).get("value", 0)
+        return {
+            "minutes": round(duration_traffic / 60),
+            "normal_minutes": round(duration_normal / 60),
+            "distance": element.get("distance", {}).get("text", ""),
+            "ratio": duration_traffic / duration_normal if duration_normal else 1,
+        }, None
+    except Exception as e:
+        return None, str(e)
+
+
+def build_drive_section(drive_data, error):
+    if error:
+        content = f'<div class="no-feed">{error}</div>'
+    elif not drive_data:
+        content = '<div class="no-feed">No drive data</div>'
+    else:
+        m = drive_data["minutes"]
+        delay = m - drive_data["normal_minutes"]
+        ratio = drive_data["ratio"]
+        if ratio < 1.15:
+            traffic_label, traffic_color = "Light traffic", "#4caf80"
+        elif ratio < 1.5:
+            traffic_label, traffic_color = "Moderate traffic", "#c9a84c"
+        else:
+            traffic_label, traffic_color = "Heavy traffic", "#e05c5c"
+        delay_str = f"+{delay} min vs normal" if delay > 2 else "Normal conditions"
+        content = f"""
+        <div class="drive-tile">
+            <div class="drive-time">{m}<span class="drive-unit">min</span></div>
+            <div class="drive-details">
+                <div class="drive-route">Calabasas → Brentwood &nbsp;·&nbsp; {drive_data['distance']}</div>
+                <div class="drive-traffic" style="color:{traffic_color}">{traffic_label} &nbsp;·&nbsp; {delay_str}</div>
+            </div>
+        </div>"""
+    return f"""
+<div class="section" id="section-Drive" data-section="Drive">
+    <div class="section-header" onclick="toggleSection('Drive')">
+        <span class="section-label">🚗 Drive Home</span>
+        <span class="section-toggle" id="toggle-Drive">&#9662;</span>
+    </div>
+    <div class="section-content" id="content-Drive">
+        {content}
+    </div>
+</div>"""
+
+
+# ── Gmail ──────────────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def get_gmail_summary():
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        return None, "Set GMAIL_ADDRESS and GMAIL_APP_PASSWORD in .env"
+    try:
+        import imaplib
+        import email as email_lib
+        from email.header import decode_header as decode_hdr
+
+        def decode_str(raw):
+            parts = decode_hdr(raw or "")
+            result = ""
+            for part, enc in parts:
+                if isinstance(part, bytes):
+                    result += part.decode(enc or "utf-8", errors="replace")
+                else:
+                    result += str(part)
+            return result.strip()
+
+        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        mail.select("INBOX")
+
+        _, unread_data = mail.search(None, "UNSEEN")
+        unread_ids = set(unread_data[0].split())
+        unread_count = len(unread_ids)
+
+        _, all_data = mail.search(None, "ALL")
+        all_ids = all_data[0].split()
+        recent_ids = all_ids[-8:][::-1]
+
+        emails = []
+        for eid in recent_ids:
+            _, msg_data = mail.fetch(eid, "(RFC822)")
+            msg = email_lib.message_from_bytes(msg_data[0][1])
+            subject = decode_str(msg.get("Subject", "(no subject)"))[:80]
+            sender_raw = decode_str(msg.get("From", ""))
+            # Extract just the name if present: "Name <email>" → "Name"
+            sender = sender_raw.split("<")[0].strip().strip('"') or sender_raw.split("@")[0]
+            sender = sender[:40]
+            date_str = msg.get("Date", "")
+            try:
+                from email.utils import parsedate_to_datetime
+                dt = parsedate_to_datetime(date_str)
+                dt_pacific = dt.astimezone(pytz.timezone("America/Los_Angeles"))
+                today = datetime.now(pytz.timezone("America/Los_Angeles")).date()
+                if dt_pacific.date() == today:
+                    time_label = dt_pacific.strftime("%-I:%M %p")
+                else:
+                    time_label = dt_pacific.strftime("%b %-d")
+            except Exception:
+                time_label = ""
+            emails.append({
+                "subject": subject,
+                "sender": sender,
+                "time": time_label,
+                "unread": eid in unread_ids,
+            })
+
+        mail.logout()
+        return {"unread_count": unread_count, "emails": emails}, None
+    except Exception as e:
+        return None, str(e)
+
+
+def build_gmail_section(gmail_data, error):
+    if error:
+        content = f'<div class="no-feed">{error}</div>'
+    elif not gmail_data:
+        content = '<div class="no-feed">No email data</div>'
+    else:
+        unread = gmail_data["unread_count"]
+        badge = f'<span class="gmail-badge">{unread} unread</span>' if unread else '<span class="gmail-badge zero">inbox zero</span>'
+        rows = ""
+        for em in gmail_data["emails"]:
+            weight = "600" if em["unread"] else "400"
+            dot = '<span class="gmail-dot"></span>' if em["unread"] else '<span class="gmail-dot" style="opacity:0"></span>'
+            rows += f"""
+            <div class="gmail-row">
+                {dot}
+                <div class="gmail-sender" style="font-weight:{weight}">{em['sender']}</div>
+                <div class="gmail-subject">{em['subject']}</div>
+                <div class="gmail-time">{em['time']}</div>
+            </div>"""
+        content = f"""
+        <div class="gmail-toprow">{badge}</div>
+        <div class="gmail-list">{rows}</div>"""
+    return f"""
+<div class="section" id="section-Gmail" data-section="Gmail">
+    <div class="section-header" onclick="toggleSection('Gmail')">
+        <span class="section-label">✉️ Gmail</span>
+        <span class="section-toggle" id="toggle-Gmail">&#9662;</span>
+    </div>
+    <div class="section-content" id="content-Gmail">
         {content}
     </div>
 </div>"""
@@ -319,7 +494,7 @@ def build_section(category, sources):
     </div>"""
 
 # ── Build Pills ───────────────────────────────────────────────
-pills_html = '<div class="pills-bar"><span class="pill active" onclick="filterSection(\'all\', this)">✦ All</span><span class="pill" onclick="filterSection(\'Portfolio\', this)">📈 Portfolio</span><span class="pill" onclick="filterSection(\'Weather\', this)">⛅ Weather</span>'
+pills_html = '<div class="pills-bar"><span class="pill active" onclick="filterSection(\'all\', this)">✦ All</span><span class="pill" onclick="filterSection(\'Drive\', this)">🚗 Drive</span><span class="pill" onclick="filterSection(\'Gmail\', this)">✉️ Gmail</span><span class="pill" onclick="filterSection(\'Portfolio\', this)">📈 Portfolio</span><span class="pill" onclick="filterSection(\'Weather\', this)">⛅ Weather</span>'
 for category in FEEDS.keys():
     sid = section_id(category)
     pills_html += f'<span class="pill" onclick="filterSection(\'{sid}\', this)">{category}</span>'
@@ -339,6 +514,8 @@ with ThreadPoolExecutor(max_workers=20) as executor:
     headline_futures = {executor.submit(fetch_source, s): s for s in all_sources}
     weather_futures = {executor.submit(fetch_weather_city, c): c for c in CITIES}
     schwab_future = executor.submit(get_schwab_positions)
+    drive_future = executor.submit(get_drive_time)
+    gmail_future = executor.submit(get_gmail_summary)
 
     headline_results = {}
     for future in as_completed(headline_futures):
@@ -352,9 +529,13 @@ with ThreadPoolExecutor(max_workers=20) as executor:
     weather_data = [(city_name, weather_collected.get(city_name)) for city_name, _ in CITIES]
 
     schwab_positions, schwab_error = schwab_future.result()
+    drive_data, drive_error = drive_future.result()
+    gmail_data, gmail_error = gmail_future.result()
 
 # ── Build Portfolio Section ───────────────────────────────────
 portfolio_section = build_schwab_section(schwab_positions, schwab_error)
+drive_section = build_drive_section(drive_data, drive_error)
+gmail_section = build_gmail_section(gmail_data, gmail_error)
 
 # ── Build Sections ────────────────────────────────────────────
 sections_html = ""
@@ -725,6 +906,115 @@ body {{
     margin-top: 0.2rem;
 }}
 
+/* Drive Home */
+.drive-tile {{
+    display: flex;
+    align-items: center;
+    gap: 2rem;
+    background: #111;
+    border: 1px solid #1e1e1e;
+    border-radius: 2px;
+    padding: 1.4rem 1.8rem;
+    margin-bottom: 1rem;
+}}
+.drive-time {{
+    font-family: 'Playfair Display', serif;
+    font-size: 3.5rem;
+    font-weight: 700;
+    color: #f5f3ee;
+    line-height: 1;
+    white-space: nowrap;
+}}
+.drive-unit {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.75rem;
+    color: #555;
+    margin-left: 0.4rem;
+    vertical-align: super;
+}}
+.drive-details {{ display: flex; flex-direction: column; gap: 0.4rem; }}
+.drive-route {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.7rem;
+    color: #666;
+    letter-spacing: 0.05em;
+}}
+.drive-traffic {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+}}
+
+/* Gmail */
+.gmail-toprow {{
+    margin-bottom: 0.8rem;
+}}
+.gmail-badge {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.62rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    background: rgba(201, 168, 76, 0.12);
+    border: 1px solid rgba(201, 168, 76, 0.25);
+    color: #c9a84c;
+    padding: 0.2rem 0.7rem;
+    border-radius: 20px;
+}}
+.gmail-badge.zero {{
+    color: #4caf80;
+    background: rgba(76, 175, 128, 0.1);
+    border-color: rgba(76, 175, 128, 0.2);
+}}
+.gmail-list {{
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    border: 1px solid #1e1e1e;
+    border-radius: 2px;
+    overflow: hidden;
+}}
+.gmail-row {{
+    display: grid;
+    grid-template-columns: 12px 160px 1fr auto;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.65rem 1rem;
+    border-bottom: 1px solid #161616;
+    background: #111;
+    transition: background 0.15s;
+}}
+.gmail-row:last-child {{ border-bottom: none; }}
+.gmail-row:hover {{ background: #161616; }}
+.gmail-dot {{
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #c9a84c;
+    flex-shrink: 0;
+}}
+.gmail-sender {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}}
+.gmail-subject {{
+    font-size: 0.8rem;
+    color: #aaa8a0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}}
+.gmail-time {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.58rem;
+    color: #444;
+    white-space: nowrap;
+    text-align: right;
+}}
+
 /* ── Mobile ───────────────────────────────────────────────── */
 @media (max-width: 768px) {{
     body {{
@@ -743,6 +1033,10 @@ body {{
         font-size: 0.62rem;
         line-height: 1.6;
     }}
+    .drive-tile {{ flex-direction: column; align-items: flex-start; gap: 0.8rem; }}
+    .drive-time {{ font-size: 2.6rem; }}
+    .gmail-row {{ grid-template-columns: 12px 1fr auto; }}
+    .gmail-sender {{ display: none; }}
     .weather-treemap {{ grid-template-columns: repeat(2, 1fr); }}
     .cols-2, .cols-3, .cols-4 {{
         grid-template-columns: 1fr;
@@ -794,6 +1088,10 @@ body {{
 </div>
 
 {pills_html}
+
+{drive_section}
+
+{gmail_section}
 
 {portfolio_section}
 
