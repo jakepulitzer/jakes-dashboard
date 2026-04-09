@@ -55,7 +55,11 @@ WEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 DRIVE_ORIGIN = "4500 Park Granada, Calabasas, CA"
-DRIVE_DESTINATION = "11836 Gorham Ave, Brentwood, CA"
+DRIVE_ROUTES = [
+    ("Brentwood", "11836 Gorham Ave, Brentwood, CA"),
+    ("Malibu Pier", "Malibu Pier, Malibu, CA"),
+    ("Venice Beach", "Venice Beach, Venice, CA"),
+]
 
 GMAIL_ADDRESS = os.getenv("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
@@ -171,28 +175,36 @@ def get_drive_time():
     if not GOOGLE_MAPS_API_KEY:
         return None, "Set GOOGLE_MAPS_API_KEY in .env"
     try:
+        destinations = "|".join(addr for _, addr in DRIVE_ROUTES)
         params = {
             "origins": DRIVE_ORIGIN,
-            "destinations": DRIVE_DESTINATION,
+            "destinations": destinations,
             "departure_time": "now",
             "traffic_model": "best_guess",
+            "units": "imperial",
             "key": GOOGLE_MAPS_API_KEY,
         }
         r = requests.get("https://maps.googleapis.com/maps/api/distancematrix/json", params=params, timeout=10)
         data = r.json()
         if data.get("status") != "OK":
             return None, f"Maps API error: {data.get('status')}"
-        element = data["rows"][0]["elements"][0]
-        if element["status"] != "OK":
-            return None, "Route not found"
-        duration_traffic = element.get("duration_in_traffic", element.get("duration", {})).get("value", 0)
-        duration_normal = element.get("duration", {}).get("value", 0)
-        return {
-            "minutes": round(duration_traffic / 60),
-            "normal_minutes": round(duration_normal / 60),
-            "distance": element.get("distance", {}).get("text", ""),
-            "ratio": duration_traffic / duration_normal if duration_normal else 1,
-        }, None
+        elements = data["rows"][0]["elements"]
+        routes = []
+        for (label, _), element in zip(DRIVE_ROUTES, elements):
+            if element["status"] != "OK":
+                routes.append({"label": label, "error": True})
+                continue
+            duration_traffic = element.get("duration_in_traffic", element.get("duration", {})).get("value", 0)
+            duration_normal = element.get("duration", {}).get("value", 0)
+            routes.append({
+                "label": label,
+                "minutes": round(duration_traffic / 60),
+                "normal_minutes": round(duration_normal / 60),
+                "distance": element.get("distance", {}).get("text", ""),
+                "ratio": duration_traffic / duration_normal if duration_normal else 1,
+                "error": False,
+            })
+        return routes, None
     except Exception as e:
         return None, str(e)
 
@@ -203,24 +215,29 @@ def build_drive_section(drive_data, error):
     elif not drive_data:
         content = '<div class="no-feed">No drive data</div>'
     else:
-        m = drive_data["minutes"]
-        delay = m - drive_data["normal_minutes"]
-        ratio = drive_data["ratio"]
-        if ratio < 1.15:
-            traffic_label, traffic_color = "Light traffic", "#4caf80"
-        elif ratio < 1.5:
-            traffic_label, traffic_color = "Moderate traffic", "#c9a84c"
-        else:
-            traffic_label, traffic_color = "Heavy traffic", "#e05c5c"
-        delay_str = f"+{delay} min vs normal" if delay > 2 else "Normal conditions"
-        content = f"""
-        <div class="drive-tile">
-            <div class="drive-time">{m}<span class="drive-unit">min</span></div>
-            <div class="drive-details">
-                <div class="drive-route">Calabasas → Brentwood &nbsp;·&nbsp; {drive_data['distance']}</div>
-                <div class="drive-traffic" style="color:{traffic_color}">{traffic_label} &nbsp;·&nbsp; {delay_str}</div>
-            </div>
-        </div>"""
+        tiles = ""
+        for route in drive_data:
+            if route.get("error"):
+                tiles += f'<div class="drive-tile"><div class="no-feed">{route["label"]}: unavailable</div></div>'
+                continue
+            m = route["minutes"]
+            delay = m - route["normal_minutes"]
+            ratio = route["ratio"]
+            if ratio < 1.15:
+                traffic_label, traffic_color = "Light", "#4caf80"
+            elif ratio < 1.5:
+                traffic_label, traffic_color = "Moderate", "#c9a84c"
+            else:
+                traffic_label, traffic_color = "Heavy", "#e05c5c"
+            delay_str = f"+{delay} min" if delay > 2 else "On time"
+            tiles += f"""
+            <div class="drive-tile">
+                <div class="drive-dest">{route['label']}</div>
+                <div class="drive-time">{m}<span class="drive-unit">min</span></div>
+                <div class="drive-route">{route['distance']}</div>
+                <div class="drive-traffic" style="color:{traffic_color}">{traffic_label} traffic &nbsp;·&nbsp; {delay_str}</div>
+            </div>"""
+        content = f'<div class="drive-grid">{tiles}</div>'
     return f"""
 <div class="section" id="section-Drive" data-section="Drive">
     <div class="section-header" onclick="toggleSection('Drive')">
@@ -907,42 +924,53 @@ body {{
 }}
 
 /* Drive Home */
+.drive-grid {{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    margin-bottom: 1rem;
+}}
 .drive-tile {{
-    display: flex;
-    align-items: center;
-    gap: 2rem;
     background: #111;
     border: 1px solid #1e1e1e;
     border-radius: 2px;
-    padding: 1.4rem 1.8rem;
-    margin-bottom: 1rem;
+    padding: 1.2rem 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+}}
+.drive-dest {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: #555;
+    margin-bottom: 0.2rem;
 }}
 .drive-time {{
     font-family: 'Playfair Display', serif;
-    font-size: 3.5rem;
+    font-size: 2.8rem;
     font-weight: 700;
     color: #f5f3ee;
     line-height: 1;
-    white-space: nowrap;
 }}
 .drive-unit {{
     font-family: 'DM Mono', monospace;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     color: #555;
-    margin-left: 0.4rem;
+    margin-left: 0.3rem;
     vertical-align: super;
 }}
-.drive-details {{ display: flex; flex-direction: column; gap: 0.4rem; }}
 .drive-route {{
     font-family: 'DM Mono', monospace;
-    font-size: 0.7rem;
-    color: #666;
-    letter-spacing: 0.05em;
+    font-size: 0.62rem;
+    color: #555;
+    letter-spacing: 0.04em;
 }}
 .drive-traffic {{
     font-family: 'DM Mono', monospace;
-    font-size: 0.68rem;
-    letter-spacing: 0.05em;
+    font-size: 0.62rem;
+    letter-spacing: 0.04em;
 }}
 
 /* Gmail */
@@ -1033,8 +1061,8 @@ body {{
         font-size: 0.62rem;
         line-height: 1.6;
     }}
-    .drive-tile {{ flex-direction: column; align-items: flex-start; gap: 0.8rem; }}
-    .drive-time {{ font-size: 2.6rem; }}
+    .drive-grid {{ grid-template-columns: 1fr; }}
+    .drive-time {{ font-size: 2.2rem; }}
     .gmail-row {{ grid-template-columns: 12px 1fr auto; }}
     .gmail-sender {{ display: none; }}
     .weather-treemap {{ grid-template-columns: repeat(2, 1fr); }}
