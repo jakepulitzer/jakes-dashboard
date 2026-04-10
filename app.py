@@ -379,9 +379,7 @@ def get_gmail_summary():
                     result += str(part)
             return result.strip()
 
-        import socket
-        socket.setdefaulttimeout(15)
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
+        mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=15)
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         mail.select("INBOX")
 
@@ -711,80 +709,71 @@ DASHBOARD_PASSWORD = st.secrets.get("DASHBOARD_PASSWORD") or os.getenv("DASHBOAR
 if DASHBOARD_PASSWORD:
     if not st.session_state.get("authenticated"):
         wrong = st.session_state.get("wrong_password", False)
-        status_msg = '// ACCESS DENIED — TRY AGAIN' if wrong else '// AUTHENTICATION REQUIRED'
-        status_color = '#e05c5c' if wrong else '#555'
-        dino_html = """
-            <div style="text-align:center; margin-bottom:1.2rem;">
-                <div style="font-size:5rem; line-height:1; filter:brightness(0);">🦕</div>
-                <div style="font-family:'Playfair Display',serif; font-size:2.6rem; font-weight:900; color:#c9a84c; letter-spacing:0.05em; margin-top:0.3rem;">STUPID</div>
-            </div>""" if wrong else ""
-        st.markdown(f"""
-        <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+
+        # Dark background + centered layout for the Streamlit shell
+        st.markdown("""
         <style>
-        .stApp, section[data-testid="stMain"], .stMainBlockContainer {{
-            background: #0a0a0a !important;
-        }}
-        .block-container {{
-            display: flex !important;
-            flex-direction: column !important;
-            align-items: center !important;
-            justify-content: center !important;
-            min-height: 100vh !important;
-            padding: 0 !important;
-        }}
-        div[data-testid="stTextInput"] {{
-            max-width: 340px;
-            margin: 0 auto;
-        }}
-        div[data-testid="stTextInput"] input {{
+        .stApp, section[data-testid="stMain"], .stMainBlockContainer { background: #0a0a0a !important; }
+        .block-container {
+            display: flex !important; flex-direction: column !important;
+            align-items: center !important; justify-content: center !important;
+            min-height: 100vh !important; padding: 0 !important;
+        }
+        div[data-testid="stTextInput"] { max-width: 340px; margin: 0 auto; }
+        div[data-testid="stTextInput"] input {
             background: #0f0f0f !important;
             border: 1px solid #2a2a2a !important;
             border-left: 3px solid #c9a84c !important;
             border-radius: 0 !important;
             color: #c9a84c !important;
-            font-family: 'DM Mono', monospace !important;
+            font-family: monospace !important;
             font-size: 1rem !important;
             letter-spacing: 0.2em !important;
             padding: 0.7rem 1rem 0.7rem 1.2rem !important;
-        }}
-        div[data-testid="stTextInput"] input:focus {{
+        }
+        div[data-testid="stTextInput"] input:focus {
             border-color: #c9a84c !important;
             box-shadow: 0 0 0 1px rgba(201,168,76,0.3) !important;
-        }}
-        div[data-testid="stTextInput"] input::placeholder {{
-            color: #333 !important;
-            letter-spacing: 0.1em !important;
-        }}
-        @keyframes blink {{ 0%,100%{{opacity:1}} 50%{{opacity:0}} }}
-        .cursor {{ display:inline-block; animation: blink 1.1s infinite; color:#c9a84c; }}
-        @keyframes scanline {{
-            0% {{ transform: translateY(-100%); }}
-            100% {{ transform: translateY(100vh); }}
-        }}
+        }
+        div[data-testid="stTextInput"] input::placeholder { color: #333 !important; }
         </style>
-        <div style="width:100%; max-width:420px; margin:0 auto;">
-            <!-- Mac-style window chrome -->
-            <div style="background:#111; border:1px solid #1e1e1e; border-bottom:none; border-radius:6px 6px 0 0; padding:0.6rem 1rem; display:flex; align-items:center; gap:0.5rem;">
+        """, unsafe_allow_html=True)
+
+        # Build the login card as a self-contained iframe so Streamlit can't touch it
+        status_msg  = "// ACCESS DENIED — TRY AGAIN" if wrong else "// AUTHENTICATION REQUIRED"
+        status_color = "#e05c5c" if wrong else "#555"
+        dino_block  = """
+            <div style="text-align:center;margin-bottom:1.2rem;">
+                <div style="font-size:5rem;line-height:1;filter:grayscale(1) brightness(0);">&#x1F995;</div>
+                <div style="font-family:'Playfair Display',serif;font-size:2.6rem;font-weight:900;color:#c9a84c;letter-spacing:0.05em;margin-top:0.3rem;">STUPID</div>
+            </div>""" if wrong else ""
+
+        login_html = f"""<!DOCTYPE html><html><head>
+        <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+        <style>
+        *{{margin:0;padding:0;box-sizing:border-box;}}
+        body{{background:#0a0a0a;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:'DM Mono',monospace;}}
+        @keyframes blink{{0%,100%{{opacity:1}}50%{{opacity:0}}}}
+        .cursor{{display:inline-block;animation:blink 1.1s infinite;color:#c9a84c;}}
+        </style></head><body>
+        <div style="width:420px;">
+            <div style="background:#111;border:1px solid #1e1e1e;border-bottom:none;border-radius:6px 6px 0 0;padding:0.6rem 1rem;display:flex;align-items:center;gap:0.5rem;">
                 <span style="width:12px;height:12px;border-radius:50%;background:#ff5f57;display:inline-block;"></span>
                 <span style="width:12px;height:12px;border-radius:50%;background:#febc2e;display:inline-block;"></span>
                 <span style="width:12px;height:12px;border-radius:50%;background:#28c840;display:inline-block;"></span>
-                <span style="font-family:'DM Mono',monospace; font-size:0.58rem; color:#333; letter-spacing:0.15em; margin-left:0.5rem; text-transform:uppercase;">dashboard.py — python3</span>
+                <span style="font-size:0.58rem;color:#333;letter-spacing:0.15em;margin-left:0.5rem;text-transform:uppercase;">dashboard.py — python3</span>
             </div>
-            <!-- Main card -->
-            <div style="background:#0d0d0d; border:1px solid #1e1e1e; border-top:none; border-radius:0 0 6px 6px; padding:2.5rem 2rem 2rem;">
-                <!-- Header rule -->
-                <div style="border-top:2px solid #c9a84c; margin-bottom:1.5rem;"></div>
-                <!-- Title -->
-                <div style="font-family:'DM Mono',monospace; font-size:0.6rem; letter-spacing:0.3em; text-transform:uppercase; color:#555; margin-bottom:0.4rem;">Jake's</div>
-                <div style="font-family:'Playfair Display',serif; font-size:2.4rem; font-weight:900; color:#f5f3ee; letter-spacing:-1px; line-height:1; margin-bottom:1.5rem;">Daily <span style="color:#c9a84c;">Dashboard</span></div>
-                <!-- Status line -->
-                <div style="font-family:'DM Mono',monospace; font-size:0.62rem; letter-spacing:0.12em; color:{status_color}; margin-bottom:1.5rem; border-left:2px solid {status_color}; padding-left:0.7rem;">{status_msg}</div>
-                {dino_html}
-                <!-- Prompt label -->
-                <div style="font-family:'DM Mono',monospace; font-size:0.6rem; color:#444; letter-spacing:0.1em; margin-bottom:0.4rem;">ENTER PASSWORD <span class="cursor">_</span></div>
+            <div style="background:#0d0d0d;border:1px solid #1e1e1e;border-top:none;border-radius:0 0 6px 6px;padding:2.5rem 2rem 2rem;">
+                <div style="border-top:2px solid #c9a84c;margin-bottom:1.5rem;"></div>
+                <div style="font-size:0.6rem;letter-spacing:0.3em;text-transform:uppercase;color:#555;margin-bottom:0.4rem;">Jake's</div>
+                <div style="font-family:'Playfair Display',serif;font-size:2.4rem;font-weight:900;color:#f5f3ee;letter-spacing:-1px;line-height:1;margin-bottom:1.5rem;">Daily <span style="color:#c9a84c;">Dashboard</span></div>
+                <div style="font-size:0.62rem;letter-spacing:0.12em;color:{status_color};margin-bottom:1.5rem;border-left:2px solid {status_color};padding-left:0.7rem;">{status_msg}</div>
+                {dino_block}
+                <div style="font-size:0.6rem;color:#444;letter-spacing:0.1em;margin-bottom:0.4rem;">ENTER PASSWORD <span class="cursor">_</span></div>
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        </body></html>"""
+        components.html(login_html, height=400 if wrong else 320)
 
         pwd = st.text_input("", type="password", label_visibility="collapsed", placeholder="············")
         if pwd:
@@ -875,17 +864,17 @@ with ThreadPoolExecutor(max_workers=20) as executor:
     gmail_future = executor.submit(get_gmail_summary)
 
     headline_results = {}
-    for future in as_completed(headline_futures, timeout=20):
+    for future in as_completed(headline_futures):
         try:
-            source_name, url, headlines = future.result(timeout=10)
+            source_name, url, headlines = future.result()
             headline_results[url] = headlines
         except Exception:
             pass
 
     weather_collected = {}
-    for future in as_completed(weather_futures, timeout=15):
+    for future in as_completed(weather_futures):
         try:
-            city_name, w = future.result(timeout=10)
+            city_name, w = future.result()
             weather_collected[city_name] = w
         except Exception:
             pass
