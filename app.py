@@ -764,6 +764,7 @@ if DASHBOARD_PASSWORD:
                 <div style="font-family:'Playfair Display',serif; font-size:2.4rem; font-weight:900; color:#f5f3ee; letter-spacing:-1px; line-height:1; margin-bottom:1.5rem;">Daily <span style="color:#c9a84c;">Dashboard</span></div>
                 <!-- Status line -->
                 <div style="font-family:'DM Mono',monospace; font-size:0.62rem; letter-spacing:0.12em; color:{status_color}; margin-bottom:1.5rem; border-left:2px solid {status_color}; padding-left:0.7rem;">{status_msg}</div>
+                {'<!-- Dino --><div style="text-align:center; margin-bottom:1.2rem;"><div style="font-size:5rem; line-height:1; filter:brightness(0);">🦕</div><div style="font-family:\'Playfair Display\',serif; font-size:2.6rem; font-weight:900; color:#c9a84c; letter-spacing:0.05em; margin-top:0.3rem;">STUPID</div></div>' if wrong else ''}
                 <!-- Prompt label -->
                 <div style="font-family:'DM Mono',monospace; font-size:0.6rem; color:#444; letter-spacing:0.1em; margin-bottom:0.4rem;">ENTER PASSWORD <span class="cursor">_</span></div>
             </div>
