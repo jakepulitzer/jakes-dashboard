@@ -379,6 +379,8 @@ def get_gmail_summary():
                     result += str(part)
             return result.strip()
 
+        import socket
+        socket.setdefaulttimeout(15)
         mail = imaplib.IMAP4_SSL("imap.gmail.com")
         mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         mail.select("INBOX")
@@ -391,10 +393,19 @@ def get_gmail_summary():
         all_ids = all_data[0].split()
         recent_ids = all_ids[-8:][::-1]
 
+        # Batch fetch all emails in one IMAP round-trip
+        if not recent_ids:
+            mail.logout()
+            return {"unread_count": unread_count, "emails": []}, None
+        batch_ids = b",".join(recent_ids)
+        _, msg_data_list = mail.fetch(batch_ids, "(RFC822)")
+        mail.logout()
+
         emails = []
-        for eid in recent_ids:
-            _, msg_data = mail.fetch(eid, "(RFC822)")
-            msg = email_lib.message_from_bytes(msg_data[0][1])
+        raw_msgs = [msg_data_list[i] for i in range(0, len(msg_data_list), 2) if msg_data_list[i] is not None]
+        for i, raw in enumerate(raw_msgs):
+            eid = recent_ids[i] if i < len(recent_ids) else b""
+            msg = email_lib.message_from_bytes(raw[1])
             subject = decode_str(msg.get("Subject", "(no subject)"))[:80]
             sender_raw = decode_str(msg.get("From", ""))
             # Extract just the name if present: "Name <email>" → "Name"
@@ -419,7 +430,6 @@ def get_gmail_summary():
                 "unread": eid in unread_ids,
             })
 
-        mail.logout()
         return {"unread_count": unread_count, "emails": emails}, None
     except Exception as e:
         return None, str(e)
@@ -703,6 +713,11 @@ if DASHBOARD_PASSWORD:
         wrong = st.session_state.get("wrong_password", False)
         status_msg = '// ACCESS DENIED — TRY AGAIN' if wrong else '// AUTHENTICATION REQUIRED'
         status_color = '#e05c5c' if wrong else '#555'
+        dino_html = """
+            <div style="text-align:center; margin-bottom:1.2rem;">
+                <div style="font-size:5rem; line-height:1; filter:brightness(0);">🦕</div>
+                <div style="font-family:'Playfair Display',serif; font-size:2.6rem; font-weight:900; color:#c9a84c; letter-spacing:0.05em; margin-top:0.3rem;">STUPID</div>
+            </div>""" if wrong else ""
         st.markdown(f"""
         <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
         <style>
@@ -764,7 +779,7 @@ if DASHBOARD_PASSWORD:
                 <div style="font-family:'Playfair Display',serif; font-size:2.4rem; font-weight:900; color:#f5f3ee; letter-spacing:-1px; line-height:1; margin-bottom:1.5rem;">Daily <span style="color:#c9a84c;">Dashboard</span></div>
                 <!-- Status line -->
                 <div style="font-family:'DM Mono',monospace; font-size:0.62rem; letter-spacing:0.12em; color:{status_color}; margin-bottom:1.5rem; border-left:2px solid {status_color}; padding-left:0.7rem;">{status_msg}</div>
-                {'<!-- Dino --><div style="text-align:center; margin-bottom:1.2rem;"><div style="font-size:5rem; line-height:1; filter:brightness(0);">🦕</div><div style="font-family:\'Playfair Display\',serif; font-size:2.6rem; font-weight:900; color:#c9a84c; letter-spacing:0.05em; margin-top:0.3rem;">STUPID</div></div>' if wrong else ''}
+                {dino_html}
                 <!-- Prompt label -->
                 <div style="font-family:'DM Mono',monospace; font-size:0.6rem; color:#444; letter-spacing:0.1em; margin-bottom:0.4rem;">ENTER PASSWORD <span class="cursor">_</span></div>
             </div>
@@ -860,19 +875,36 @@ with ThreadPoolExecutor(max_workers=20) as executor:
     gmail_future = executor.submit(get_gmail_summary)
 
     headline_results = {}
-    for future in as_completed(headline_futures):
-        source_name, url, headlines = future.result()
-        headline_results[url] = headlines
+    for future in as_completed(headline_futures, timeout=20):
+        try:
+            source_name, url, headlines = future.result(timeout=10)
+            headline_results[url] = headlines
+        except Exception:
+            pass
 
     weather_collected = {}
-    for future in as_completed(weather_futures):
-        city_name, w = future.result()
-        weather_collected[city_name] = w
+    for future in as_completed(weather_futures, timeout=15):
+        try:
+            city_name, w = future.result(timeout=10)
+            weather_collected[city_name] = w
+        except Exception:
+            pass
     weather_data = [(city_name, weather_collected.get(city_name)) for city_name, _ in CITIES]
 
-    schwab_positions, schwab_error = schwab_future.result()
-    drive_data, drive_error = drive_future.result()
-    gmail_data, gmail_error = gmail_future.result()
+    try:
+        schwab_positions, schwab_error = schwab_future.result(timeout=20)
+    except Exception as e:
+        schwab_positions, schwab_error = None, str(e)
+
+    try:
+        drive_data, drive_error = drive_future.result(timeout=15)
+    except Exception as e:
+        drive_data, drive_error = None, str(e)
+
+    try:
+        gmail_data, gmail_error = gmail_future.result(timeout=20)
+    except Exception as e:
+        gmail_data, gmail_error = None, str(e)
 
 # ── Build All Sections ────────────────────────────────────────
 summary_section = build_summary_section(schwab_positions, weather_data, drive_data, headline_results, gmail_data, gmail_error)
