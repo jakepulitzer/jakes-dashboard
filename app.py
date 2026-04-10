@@ -14,6 +14,20 @@ SCHWAB_APP_KEY = os.getenv("SCHWAB_APP_KEY")
 SCHWAB_APP_SECRET = os.getenv("SCHWAB_APP_SECRET")
 SCHWAB_TOKEN_PATH = os.path.join(os.path.dirname(__file__), "token.json")
 
+# On Streamlit Cloud, token.json doesn't exist as a file — decode it from secrets
+def _ensure_token():
+    if not os.path.exists(SCHWAB_TOKEN_PATH):
+        try:
+            import base64
+            token_b64 = st.secrets.get("SCHWAB_TOKEN_JSON") or os.getenv("SCHWAB_TOKEN_JSON", "")
+            if token_b64:
+                with open(SCHWAB_TOKEN_PATH, "wb") as f:
+                    f.write(base64.b64decode(token_b64))
+        except Exception:
+            pass
+
+_ensure_token()
+
 # ── Config ────────────────────────────────────────────────────
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -63,6 +77,11 @@ DRIVE_ROUTES = [
 GMAIL_ADDRESS = os.getenv("GMAIL_ADDRESS")
 GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD")
 
+ACCOUNT_LABELS = {
+    "9632": "Roth IRA",
+    "2902": "Individual Brokerage",
+}
+
 CITIES = [
     ("Los Angeles", "Los Angeles,US"),
     ("Santa Monica", "Santa Monica,US"),
@@ -74,6 +93,19 @@ CITIES = [
 ]
 
 # ── Schwab Positions ──────────────────────────────────────────
+def pct_to_tile_colors(pct):
+    """Map daily % change to (bg, fg) — red-to-green gradient, muted palette."""
+    if pct >= 3:    return "#0a2e1c", "#5abf88"
+    if pct >= 2:    return "#0a2818", "#4caf7a"
+    if pct >= 1:    return "#0a2414", "#3d9e6a"
+    if pct >= 0.5:  return "#0c1f10", "#2e8f5a"
+    if pct >= 0:    return "#111f12", "#1f7a42"
+    if pct >= -0.5: return "#1f1111", "#7a3030"
+    if pct >= -1:   return "#241212", "#9f3838"
+    if pct >= -2:   return "#2d1212", "#b54545"
+    if pct >= -3:   return "#361414", "#cc5050"
+    return "#3d1414", "#e06060"
+
 @st.cache_data(ttl=300)
 def get_schwab_positions():
     try:
@@ -92,9 +124,14 @@ def get_schwab_positions():
         resp.raise_for_status()
         accounts = resp.json()
 
-        positions = []
+        accounts_data = []
         for account in accounts:
             acct = account.get("securitiesAccount", {})
+            acct_number = acct.get("accountNumber", "")
+            last4 = acct_number[-4:] if acct_number else "??"
+            label = ACCOUNT_LABELS.get(last4, f"Account (···{last4})")  # add unknown accounts to ACCOUNT_LABELS if needed
+
+            positions = []
             for pos in acct.get("positions", []):
                 instrument = pos.get("instrument", {})
                 symbol = instrument.get("symbol", "")
@@ -121,40 +158,112 @@ def get_schwab_positions():
                     "total_pl_pct": total_pl_pct,
                 })
 
-        positions.sort(key=lambda x: x["market_value"], reverse=True)
-        return positions, None
+            if positions:
+                positions.sort(key=lambda x: x["market_value"], reverse=True)
+                accounts_data.append({"label": label, "positions": positions})
+
+        return accounts_data, None
     except ImportError:
         return None, "schwab-py not installed — run: pip install schwab-py"
     except Exception as e:
         return None, str(e)
 
 
-def build_schwab_section(positions, error):
+def build_rollup(accounts_data):
+    """Aggregate positions across all accounts by symbol."""
+    merged = {}
+    for acct in accounts_data:
+        for p in acct["positions"]:
+            sym = p["symbol"]
+            if sym not in merged:
+                merged[sym] = {
+                    "symbol": sym,
+                    "qty": 0,
+                    "market_value": 0,
+                    "day_pl": 0,
+                    "total_pl": 0,
+                    "cost_basis": 0,
+                    "day_pl_pct": 0,
+                    "total_pl_pct": 0,
+                    "current_price": p["current_price"],
+                }
+            merged[sym]["qty"] += p["qty"]
+            merged[sym]["market_value"] += p["market_value"]
+            merged[sym]["day_pl"] += p["day_pl"]
+            merged[sym]["total_pl"] += p["total_pl"]
+            merged[sym]["cost_basis"] += p["avg_price"] * p["qty"]
+
+    rollup = []
+    for sym, d in merged.items():
+        prev_mv = d["market_value"] - d["day_pl"]
+        d["day_pl_pct"] = (d["day_pl"] / prev_mv * 100) if prev_mv else 0
+        d["total_pl_pct"] = (d["total_pl"] / d["cost_basis"] * 100) if d["cost_basis"] else 0
+        rollup.append(d)
+
+    rollup.sort(key=lambda x: x["market_value"], reverse=True)
+    return rollup
+
+
+def build_treemap(positions):
+    """Build a single treemap HTML block for a list of positions."""
+    sorted_pos = sorted(positions, key=lambda x: abs(x["day_pl"]), reverse=True)
+    max_abs = max(abs(p["day_pl"]) for p in sorted_pos) or 1
+    tiles = ""
+    for p in sorted_pos:
+        bg, fg = pct_to_tile_colors(p["day_pl_pct"])
+        flex_val = max(2, round(abs(p["day_pl"]) / max_abs * 20))
+        day_sign = "+" if p["day_pl"] >= 0 else ""
+        total_sign = "+" if p["total_pl"] >= 0 else ""
+        tiles += f"""
+        <div class="ptile" style="background:{bg}; color:{fg}; flex:{flex_val} 1 {max(100, flex_val * 11)}px;">
+            <div class="ptile-symbol">{p["symbol"]}</div>
+            <div class="ptile-price">${p["current_price"]:,.2f}</div>
+            <div class="ptile-mv">${p["market_value"]:,.0f}</div>
+            <div class="ptile-day-row">{day_sign}{p["day_pl_pct"]:.2f}% &nbsp; {day_sign}${p["day_pl"]:,.2f}</div>
+            <div class="ptile-divider"></div>
+            <div class="ptile-total">{total_sign}{p["total_pl_pct"]:.1f}% &nbsp; {total_sign}${p["total_pl"]:,.0f} total</div>
+            <div class="ptile-shares">{p["qty"]:g} shares</div>
+        </div>"""
+    return f'<div class="portfolio-treemap">{tiles}</div>'
+
+
+def build_acct_summary(positions, label=None):
+    """Build a summary line showing day % and $ for a set of positions."""
+    day_pl = sum(p["day_pl"] for p in positions)
+    mv = sum(p["market_value"] for p in positions)
+    prev_mv = mv - day_pl
+    day_pct = (day_pl / prev_mv * 100) if prev_mv else 0
+    color = "#4caf80" if day_pl >= 0 else "#e05c5c"
+    sign = "+" if day_pl >= 0 else ""
+    label_html = f'<span class="acct-summary-label">{label}</span> &nbsp; ' if label else ""
+    return f"""<div class="acct-summary">
+        {label_html}<span style="color:{color};">{sign}{day_pct:.2f}%</span>
+        <span style="color:{color}; opacity:0.7;"> &nbsp; {sign}${day_pl:,.2f} today</span>
+    </div>"""
+
+
+def build_schwab_section(accounts_data, error):
     if error:
+        summary = ""
         content = f'<div class="no-feed">{error}</div>'
-    elif not positions:
+    elif not accounts_data:
+        summary = ""
         content = '<div class="no-feed">No positions found</div>'
     else:
-        cards = ""
-        for p in positions:
-            day_color = "#4caf80" if p["day_pl"] >= 0 else "#e05c5c"
-            total_color = "#4caf80" if p["total_pl"] >= 0 else "#e05c5c"
-            day_sign = "+" if p["day_pl"] >= 0 else ""
-            total_sign = "+" if p["total_pl"] >= 0 else ""
-            desc = p["description"][:28] + "…" if len(p["description"]) > 28 else p["description"]
-            cards += f"""
-            <div class="schwab-card">
-                <div class="schwab-symbol">{p["symbol"]}</div>
-                <div class="schwab-desc">{desc}</div>
-                <div class="schwab-price">${p["current_price"]:,.2f}</div>
-                <div class="schwab-value">${p["market_value"]:,.0f} &nbsp;<span class="schwab-qty">{p["qty"]:g} shares</span></div>
-                <div class="schwab-pl-row">
-                    <span style="color:{day_color}">{day_sign}${p["day_pl"]:,.2f} today</span>
-                    <span style="color:{total_color}">{total_sign}{p["total_pl_pct"]:.1f}% total</span>
-                </div>
-            </div>"""
+        all_positions = [p for acct in accounts_data for p in acct["positions"]]
 
-        content = f'<div class="schwab-grid">{cards}</div>'
+        # Overall summary across all accounts
+        summary = build_acct_summary(all_positions)
+
+        # Rollup treemap
+        rollup = build_rollup(accounts_data)
+        content = '<div class="acct-label">All Accounts</div>'
+        content += build_treemap(rollup)
+
+        # One treemap per account with its own summary
+        for acct in accounts_data:
+            content += build_acct_summary(acct["positions"], label=acct["label"])
+            content += build_treemap(acct["positions"])
 
     return f"""
 <div class="section" id="section-Portfolio" data-section="Portfolio">
@@ -163,6 +272,7 @@ def build_schwab_section(positions, error):
         <span class="section-toggle" id="toggle-Portfolio">&#9662;</span>
     </div>
     <div class="section-content" id="content-Portfolio">
+        {summary}
         {content}
     </div>
 </div>"""
@@ -349,6 +459,192 @@ def build_gmail_section(gmail_data, error):
 </div>"""
 
 
+# ── Color Helpers ─────────────────────────────────────────────
+def temp_to_colors(temp):
+    """Return (bg_color, text_color) based on temperature in °F — muted palette."""
+    if temp >= 100: return "#3d1a1a", "#c9a09a"
+    if temp >= 90:  return "#3d2218", "#c9a48a"
+    if temp >= 80:  return "#3a2a14", "#c9b080"
+    if temp >= 70:  return "#2a3018", "#a0b87a"
+    if temp >= 60:  return "#1a2e20", "#7aaa88"
+    if temp >= 50:  return "#162535", "#7aA0c0"
+    if temp >= 40:  return "#121e30", "#6e90b8"
+    if temp >= 30:  return "#101828", "#7080b0"
+    return "#0d1420", "#6878a8"
+
+# ── Summary Section ───────────────────────────────────────────
+CA_CITIES_SUMMARY = {"Los Angeles", "Santa Monica", "Calabasas", "San Francisco"}
+SUMMARY_LA_COUNT = 3
+SUMMARY_SPORTS_COUNT = 2
+
+def _swing_bar(pct, max_swing=3.0):
+    """Return HTML for a centered swing bar showing day % change."""
+    clamped = max(-max_swing, min(max_swing, pct))
+    bar_pct = abs(clamped) / max_swing * 50
+    bar_color = "#4caf80" if pct >= 0 else "#e05c5c"
+    bar_left = 50 - bar_pct if pct < 0 else 50
+    return f"""
+    <div class="sum-swing-track">
+        <div class="sum-swing-center"></div>
+        <div class="sum-swing-fill" style="left:{bar_left:.1f}%; width:{bar_pct:.1f}%; background:{bar_color};"></div>
+    </div>
+    <div class="sum-swing-labels"><span>-3%</span><span>0</span><span>+3%</span></div>"""
+
+
+def _summary_portfolio(accounts_data):
+    if not accounts_data:
+        return '<div class="sum-empty">Portfolio unavailable</div>'
+    all_pos = [p for acct in accounts_data for p in acct["positions"]]
+    total_mv = sum(p["market_value"] for p in all_pos)
+    total_day_pl = sum(p["day_pl"] for p in all_pos)
+    prev_mv = total_mv - total_day_pl
+    total_pct = (total_day_pl / prev_mv * 100) if prev_mv else 0
+    color = "#4caf80" if total_day_pl >= 0 else "#e05c5c"
+    sign = "+" if total_day_pl >= 0 else ""
+
+    # Themed swatches: gold + muted blue-gray matching the dark newspaper palette
+    swatch_colors = ["#c9a84c", "#7a9ab8", "#8a7acc", "#7aaa88"]
+
+    # Stacked bar segments + per-account legend rows with swing bars
+    stack_segs = ""
+    legend_rows = ""
+    for i, acct in enumerate(accounts_data):
+        acct_mv = sum(p["market_value"] for p in acct["positions"])
+        acct_day_pl = sum(p["day_pl"] for p in acct["positions"])
+        prev = acct_mv - acct_day_pl
+        acct_pct = (acct_day_pl / prev * 100) if prev else 0
+        flex_val = (acct_mv / total_mv * 100) if total_mv else 0
+        bc = "#4caf80" if acct_day_pl >= 0 else "#e05c5c"
+        bs = "+" if acct_day_pl >= 0 else ""
+        swatch = swatch_colors[i % len(swatch_colors)]
+        stack_segs += f'<div class="sum-stack-seg" style="flex:{flex_val:.1f}; background:{swatch};" title="{acct["label"]}"></div>'
+        legend_rows += f"""
+        <div class="sum-legend-row">
+            <span class="sum-legend-dot" style="background:{swatch};"></span>
+            <span class="sum-legend-label">{acct["label"]}</span>
+            <span class="sum-legend-val">${acct_mv:,.0f}</span>
+            <span class="sum-legend-chg" style="color:{bc};">{bs}{acct_pct:.2f}% &nbsp; {bs}${acct_day_pl:,.0f}</span>
+        </div>
+        <div class="sum-acct-swing">{_swing_bar(acct_pct)}</div>"""
+
+    return f"""
+    <div class="sum-panel-title">Portfolio</div>
+    <div class="sum-port-total">${total_mv:,.0f}</div>
+    <div class="sum-port-day" style="color:{color};">{sign}{total_pct:.2f}% &nbsp; {sign}${total_day_pl:,.2f} today</div>
+    <div class="sum-stack-bar">{stack_segs}</div>
+    <div class="sum-legend">{legend_rows}</div>"""
+
+
+def _summary_weather(weather_data):
+    rows = ""
+    for city_name, w in weather_data:
+        if city_name not in CA_CITIES_SUMMARY:
+            continue
+        if not w:
+            rows += f'<div class="sum-w-row"><span class="sum-w-city">{city_name}</span><span class="sum-w-temp">—</span></div>'
+            continue
+        bg, fg = temp_to_colors(w["temp"])
+        rows += f"""
+        <div class="sum-w-row" style="background:{bg}; color:{fg};">
+            <span class="sum-w-city">{city_name}</span>
+            <span class="sum-w-temp">{w["temp"]}°</span>
+            <span class="sum-w-cond">{w["condition"]}</span>
+        </div>"""
+    return f'<div class="sum-panel-title">Weather</div><div class="sum-w-list">{rows}</div>'
+
+
+def _summary_drives(drive_data):
+    if not drive_data:
+        return '<div class="sum-panel-title">Traffic</div><div class="sum-empty">Unavailable</div>'
+    rows = ""
+    for route in drive_data:
+        if route.get("error"):
+            rows += f'<div class="sum-d-row"><span class="sum-d-label">{route["label"]}</span><span class="sum-d-time">—</span></div>'
+            continue
+        ratio = route["ratio"]
+        tc = "#4caf80" if ratio < 1.15 else ("#c9a84c" if ratio < 1.5 else "#e05c5c")
+        rows += f"""
+        <div class="sum-d-row">
+            <span class="sum-d-label">{route["label"]}</span>
+            <span class="sum-d-time" style="color:{tc};">{route["minutes"]}<span class="sum-d-unit">min</span></span>
+            <span class="sum-d-dist">{route.get("distance", "")}</span>
+        </div>"""
+    return f'<div class="sum-panel-title">Traffic</div><div class="sum-d-list">{rows}</div>'
+
+
+def _summary_stories(headline_results):
+    la_sources = FEEDS.get("🌴 LA Local", [])
+    sports_sources = FEEDS.get("🏈 Sports", [])
+    stories = []
+    for name, url in la_sources:
+        for title, link in headline_results.get(url, []):
+            stories.append((title, link, name))
+            break
+        if len(stories) >= SUMMARY_LA_COUNT:
+            break
+    for name, url in sports_sources:
+        for title, link in headline_results.get(url, []):
+            stories.append((title, link, name))
+            break
+        if len([s for s in stories if s[2] in [n for n, _ in sports_sources]]) >= SUMMARY_SPORTS_COUNT:
+            break
+    rows = ""
+    for title, link, source in stories:
+        safe = title.replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+        rows += f"""
+        <div class="sum-story">
+            <span class="sum-story-src">{source}</span>
+            <a href="{link}" target="_blank" class="sum-story-link">{safe}</a>
+        </div>"""
+    return f'<div class="sum-panel-title">Top Stories</div><div class="sum-stories">{rows}</div>'
+
+
+def _summary_email(gmail_data, error):
+    if error or not gmail_data:
+        return '<div class="sum-panel-title">Email</div><div class="sum-empty">Unavailable</div>'
+    unread = gmail_data["unread_count"]
+    badge_color = "#c9a84c" if unread > 0 else "#4caf80"
+    badge_text = f"{unread} unread" if unread > 0 else "inbox zero"
+    rows = ""
+    for em in gmail_data["emails"][:5]:
+        weight = "600" if em["unread"] else "400"
+        dot = f'<span class="sum-em-dot" style="opacity:{1 if em["unread"] else 0};"></span>'
+        rows += f"""
+        <div class="sum-em-row" style="font-weight:{weight};">
+            {dot}
+            <span class="sum-em-sender">{em['sender']}</span>
+            <span class="sum-em-subject">{em['subject']}</span>
+            <span class="sum-em-time">{em['time']}</span>
+        </div>"""
+    return f"""
+    <div class="sum-panel-title">Email &nbsp;<span style="color:{badge_color}; font-size:0.65rem; letter-spacing:0.05em; text-transform:none;">{badge_text}</span></div>
+    <div class="sum-em-list">{rows}</div>"""
+
+
+def build_summary_section(accounts_data, weather_data, drive_data, headline_results, gmail_data=None, gmail_error=None):
+    port  = _summary_portfolio(accounts_data)
+    wx    = _summary_weather(weather_data)
+    drv   = _summary_drives(drive_data)
+    mail  = _summary_email(gmail_data, gmail_error)
+    news  = _summary_stories(headline_results)
+    return f"""
+<div class="section" id="section-Summary" data-section="Summary">
+    <div class="section-header" onclick="toggleSection('Summary')">
+        <span class="section-label">⚡ Summary</span>
+        <span class="section-toggle" id="toggle-Summary">&#9662;</span>
+    </div>
+    <div class="section-content" id="content-Summary">
+        <div class="summary-grid">
+            <div class="sum-panel">{port}</div>
+            <div class="sum-panel">{wx}</div>
+            <div class="sum-panel">{drv}</div>
+            <div class="sum-panel">{mail}</div>
+            <div class="sum-panel">{news}</div>
+        </div>
+    </div>
+</div>"""
+
+
 # ── Fetch Headlines ───────────────────────────────────────────
 @st.cache_data(ttl=900)
 def get_headlines(url, num=HEADLINES_PER_SOURCE):
@@ -405,47 +701,76 @@ DASHBOARD_PASSWORD = st.secrets.get("DASHBOARD_PASSWORD") or os.getenv("DASHBOAR
 if DASHBOARD_PASSWORD:
     if not st.session_state.get("authenticated"):
         wrong = st.session_state.get("wrong_password", False)
-        st.markdown("""
+        status_msg = '// ACCESS DENIED — TRY AGAIN' if wrong else '// AUTHENTICATION REQUIRED'
+        status_color = '#e05c5c' if wrong else '#555'
+        st.markdown(f"""
+        <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
         <style>
-        .stApp, section[data-testid="stMain"], .stMainBlockContainer {
-            background: #ffffff !important;
-        }
-        .block-container {
+        .stApp, section[data-testid="stMain"], .stMainBlockContainer {{
+            background: #0a0a0a !important;
+        }}
+        .block-container {{
             display: flex !important;
             flex-direction: column !important;
             align-items: center !important;
             justify-content: center !important;
-            min-height: 90vh !important;
-            padding-top: 0 !important;
-        }
-        div[data-testid="stTextInput"] input {
-            text-align: center;
-            font-size: 1.2rem;
-            border: 3px solid #000 !important;
+            min-height: 100vh !important;
+            padding: 0 !important;
+        }}
+        div[data-testid="stTextInput"] {{
+            max-width: 340px;
+            margin: 0 auto;
+        }}
+        div[data-testid="stTextInput"] input {{
+            background: #0f0f0f !important;
+            border: 1px solid #2a2a2a !important;
+            border-left: 3px solid #c9a84c !important;
             border-radius: 0 !important;
-            background: #fff !important;
-            color: #000 !important;
-            padding: 0.6rem 1rem !important;
-        }
-        div[data-testid="stTextInput"] { max-width: 260px; margin: 0 auto; }
+            color: #c9a84c !important;
+            font-family: 'DM Mono', monospace !important;
+            font-size: 1rem !important;
+            letter-spacing: 0.2em !important;
+            padding: 0.7rem 1rem 0.7rem 1.2rem !important;
+        }}
+        div[data-testid="stTextInput"] input:focus {{
+            border-color: #c9a84c !important;
+            box-shadow: 0 0 0 1px rgba(201,168,76,0.3) !important;
+        }}
+        div[data-testid="stTextInput"] input::placeholder {{
+            color: #333 !important;
+            letter-spacing: 0.1em !important;
+        }}
+        @keyframes blink {{ 0%,100%{{opacity:1}} 50%{{opacity:0}} }}
+        .cursor {{ display:inline-block; animation: blink 1.1s infinite; color:#c9a84c; }}
+        @keyframes scanline {{
+            0% {{ transform: translateY(-100%); }}
+            100% {{ transform: translateY(100vh); }}
+        }}
         </style>
+        <div style="width:100%; max-width:420px; margin:0 auto;">
+            <!-- Mac-style window chrome -->
+            <div style="background:#111; border:1px solid #1e1e1e; border-bottom:none; border-radius:6px 6px 0 0; padding:0.6rem 1rem; display:flex; align-items:center; gap:0.5rem;">
+                <span style="width:12px;height:12px;border-radius:50%;background:#ff5f57;display:inline-block;"></span>
+                <span style="width:12px;height:12px;border-radius:50%;background:#febc2e;display:inline-block;"></span>
+                <span style="width:12px;height:12px;border-radius:50%;background:#28c840;display:inline-block;"></span>
+                <span style="font-family:'DM Mono',monospace; font-size:0.58rem; color:#333; letter-spacing:0.15em; margin-left:0.5rem; text-transform:uppercase;">dashboard.py — python3</span>
+            </div>
+            <!-- Main card -->
+            <div style="background:#0d0d0d; border:1px solid #1e1e1e; border-top:none; border-radius:0 0 6px 6px; padding:2.5rem 2rem 2rem;">
+                <!-- Header rule -->
+                <div style="border-top:2px solid #c9a84c; margin-bottom:1.5rem;"></div>
+                <!-- Title -->
+                <div style="font-family:'DM Mono',monospace; font-size:0.6rem; letter-spacing:0.3em; text-transform:uppercase; color:#555; margin-bottom:0.4rem;">Jake's</div>
+                <div style="font-family:'Playfair Display',serif; font-size:2.4rem; font-weight:900; color:#f5f3ee; letter-spacing:-1px; line-height:1; margin-bottom:1.5rem;">Daily <span style="color:#c9a84c;">Dashboard</span></div>
+                <!-- Status line -->
+                <div style="font-family:'DM Mono',monospace; font-size:0.62rem; letter-spacing:0.12em; color:{status_color}; margin-bottom:1.5rem; border-left:2px solid {status_color}; padding-left:0.7rem;">{status_msg}</div>
+                <!-- Prompt label -->
+                <div style="font-family:'DM Mono',monospace; font-size:0.6rem; color:#444; letter-spacing:0.1em; margin-bottom:0.4rem;">ENTER PASSWORD <span class="cursor">_</span></div>
+            </div>
+        </div>
         """, unsafe_allow_html=True)
 
-        if wrong:
-            st.markdown("""
-            <div style="text-align:center; margin-bottom:1.5rem;">
-                <div style="font-size:8rem; line-height:1;">🦕</div>
-                <div style="font-family:'Arial Black',sans-serif; font-size:4rem; font-weight:900; color:#000; letter-spacing:-2px; margin-top:0.5rem;">STUPID</div>
-            </div>
-            """, unsafe_allow_html=True)
-        else:
-            st.markdown("""
-            <div style="text-align:center; margin-bottom:1.5rem;">
-                <div style="font-family:'Arial Black',sans-serif; font-size:2.8rem; font-weight:900; color:#000; letter-spacing:-1px; line-height:1.1;">ENTER FUCKIN<br>PASSWORD</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-        pwd = st.text_input("", type="password", label_visibility="collapsed", placeholder="••••••••")
+        pwd = st.text_input("", type="password", label_visibility="collapsed", placeholder="············")
         if pwd:
             if pwd == DASHBOARD_PASSWORD:
                 st.session_state["authenticated"] = True
@@ -510,7 +835,7 @@ def build_section(category, sources):
     </div>"""
 
 # ── Build Pills ───────────────────────────────────────────────
-pills_html = '<div class="pills-bar"><span class="pill active" onclick="filterSection(\'all\', this)">✦ All</span><span class="pill" onclick="filterSection(\'Drive\', this)">🚗 Traffic</span><span class="pill" onclick="filterSection(\'Gmail\', this)">✉️ Gmail</span><span class="pill" onclick="filterSection(\'Portfolio\', this)">📈 Portfolio</span><span class="pill" onclick="filterSection(\'Weather\', this)">⛅ Weather</span>'
+pills_html = '<div class="pills-bar"><span class="pill active" onclick="filterSection(\'all\', this)">✦ All</span><span class="pill" onclick="filterSection(\'Summary\', this)">⚡ Summary</span><span class="pill" onclick="filterSection(\'Drive\', this)">🚗 Traffic</span><span class="pill" onclick="filterSection(\'Gmail\', this)">✉️ Gmail</span><span class="pill" onclick="filterSection(\'Portfolio\', this)">📈 Portfolio</span><span class="pill" onclick="filterSection(\'Weather\', this)">⛅ Weather</span>'
 for category in FEEDS.keys():
     sid = section_id(category)
     pills_html += f'<span class="pill" onclick="filterSection(\'{sid}\', this)">{category}</span>'
@@ -548,7 +873,8 @@ with ThreadPoolExecutor(max_workers=20) as executor:
     drive_data, drive_error = drive_future.result()
     gmail_data, gmail_error = gmail_future.result()
 
-# ── Build Portfolio Section ───────────────────────────────────
+# ── Build All Sections ────────────────────────────────────────
+summary_section = build_summary_section(schwab_positions, weather_data, drive_data, headline_results, gmail_data, gmail_error)
 portfolio_section = build_schwab_section(schwab_positions, schwab_error)
 drive_section = build_drive_section(drive_data, drive_error)
 gmail_section = build_gmail_section(gmail_data, gmail_error)
@@ -559,17 +885,6 @@ for category, sources in FEEDS.items():
     sections_html += build_section(category, sources)
 
 # ── Build Weather Treemap ─────────────────────────────────────
-def temp_to_colors(temp):
-    """Return (bg_color, text_color) based on temperature in °F — muted palette."""
-    if temp >= 100: return "#3d1a1a", "#c9a09a"
-    if temp >= 90:  return "#3d2218", "#c9a48a"
-    if temp >= 80:  return "#3a2a14", "#c9b080"
-    if temp >= 70:  return "#2a3018", "#a0b87a"
-    if temp >= 60:  return "#1a2e20", "#7aaa88"
-    if temp >= 50:  return "#162535", "#7aA0c0"
-    if temp >= 40:  return "#121e30", "#6e90b8"
-    if temp >= 30:  return "#101828", "#7080b0"
-    return "#0d1420", "#6878a8"
 
 weather_tiles = ""
 for city_name, w in weather_data:
@@ -844,82 +1159,347 @@ body {{
     opacity: 0.4;
 }}
 
-/* Portfolio */
-.schwab-grid {{
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-    gap: 1rem;
+/* Portfolio Treemap */
+.portfolio-treemap {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
     margin-bottom: 1rem;
 }}
 
-.schwab-card {{
-    background: #111;
-    border: 1px solid #1e1e1e;
-    border-radius: 2px;
+.ptile {{
+    border-radius: 3px;
     padding: 1.1rem 1rem;
-    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-height: 150px;
     overflow: hidden;
-    transition: border-color 0.2s, background 0.2s;
+    transition: filter 0.2s, transform 0.15s;
+    cursor: default;
 }}
+.ptile:hover {{ filter: brightness(1.15); transform: scale(1.02); }}
 
-.schwab-card::before {{
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: linear-gradient(90deg, #c9a84c, transparent);
-    opacity: 0;
-    transition: opacity 0.2s;
-}}
-
-.schwab-card:hover {{ background: #161616; border-color: #333; }}
-.schwab-card:hover::before {{ opacity: 1; }}
-
-.schwab-symbol {{
+.ptile-symbol {{
     font-family: 'DM Mono', monospace;
-    font-size: 0.85rem;
+    font-size: 0.65rem;
     font-weight: 600;
-    color: #c9a84c;
-    letter-spacing: 0.05em;
-    margin-bottom: 0.15rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    opacity: 0.6;
+    margin-bottom: 0.5rem;
 }}
 
-.schwab-desc {{
-    font-size: 0.65rem;
+.ptile-price {{
+    font-family: 'Playfair Display', serif;
+    font-size: 1.7rem;
+    font-weight: 700;
+    line-height: 1;
+    margin-bottom: 0.4rem;
+}}
+
+.ptile-mv {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.68rem;
+    opacity: 0.6;
+    margin-bottom: 0.4rem;
+    margin-top: -0.1rem;
+}}
+
+.ptile-day-row {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.62rem;
+    opacity: 0.8;
+    margin-bottom: 0.5rem;
+}}
+
+.ptile-divider {{
+    border-top: 1px solid rgba(255,255,255,0.08);
+    margin: 0.4rem 0;
+}}
+
+.ptile-total {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.55rem;
+    opacity: 0.55;
+    margin-bottom: 0.3rem;
+}}
+
+.ptile-shares {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.52rem;
+    opacity: 0.35;
+    margin-top: auto;
+}}
+
+.acct-label {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.6rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
     color: #444;
+    margin: 1.8rem 0 0.5rem;
+}}
+.acct-label:first-of-type {{ margin-top: 0; }}
+
+.acct-summary {{
+    font-family: 'Playfair Display', serif;
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 0.8rem;
+    line-height: 1;
+}}
+.acct-summary-label {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: #444;
+    vertical-align: middle;
+    font-weight: 400;
+}}
+
+/* Summary Section */
+.summary-grid {{
+    display: grid;
+    grid-template-columns: 2fr 1fr 1.2fr 1.5fr 1.8fr;
+    gap: 1.5rem;
+    align-items: start;
+}}
+.sum-panel {{
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}}
+.sum-panel-title {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.58rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: #444;
+    margin-bottom: 0.7rem;
+}}
+.sum-empty {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.65rem;
+    color: #333;
+}}
+/* Portfolio panel */
+.sum-port-total {{
+    font-family: 'Playfair Display', serif;
+    font-size: 2rem;
+    font-weight: 700;
+    line-height: 1;
+    color: #f5f3ee;
+    margin-bottom: 0.2rem;
+}}
+.sum-port-day {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.63rem;
+    margin-bottom: 0.9rem;
+}}
+.sum-stack-bar {{
+    display: flex;
+    height: 10px;
+    border-radius: 3px;
+    overflow: hidden;
+    gap: 2px;
     margin-bottom: 0.6rem;
+}}
+.sum-stack-seg {{ height: 100%; border-radius: 2px; }}
+.sum-legend {{ display: flex; flex-direction: column; gap: 0.35rem; }}
+.sum-legend-row {{
+    display: grid;
+    grid-template-columns: 8px 1fr auto auto;
+    align-items: center;
+    gap: 0.4rem;
+    margin-bottom: 0.2rem;
+}}
+.sum-legend-dot {{
+    width: 8px; height: 8px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}}
+.sum-legend-label {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.56rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #666;
+}}
+.sum-legend-val {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.58rem;
+    color: #555;
+}}
+.sum-legend-chg {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.58rem;
+    text-align: right;
+}}
+.sum-swing-wrap {{ margin-top: 0.4rem; }}
+.sum-swing-track {{
+    position: relative;
+    height: 8px;
+    background: #1a1a1a;
+    border-radius: 4px;
+    overflow: hidden;
+    margin-bottom: 0.25rem;
+}}
+.sum-swing-center {{
+    position: absolute;
+    left: 50%; top: 0;
+    width: 1px; height: 100%;
+    background: #333;
+}}
+.sum-swing-fill {{
+    position: absolute;
+    top: 0; height: 100%;
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}}
+.sum-swing-labels {{
+    display: flex;
+    justify-content: space-between;
+    font-family: 'DM Mono', monospace;
+    font-size: 0.5rem;
+    color: #444;
+}}
+.sum-acct-swing {{
+    margin: 0.25rem 0 0.7rem 1.1rem;
+}}
+/* Weather panel */
+.sum-w-list {{ display: flex; flex-direction: column; gap: 0.35rem; }}
+.sum-w-row {{
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.45rem 0.7rem;
+    border-radius: 3px;
+    background: #111;
+}}
+.sum-w-city {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.56rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    opacity: 0.6;
+    flex: 1;
+}}
+.sum-w-temp {{
+    font-family: 'Playfair Display', serif;
+    font-size: 1.1rem;
+    font-weight: 700;
+    line-height: 1;
+}}
+.sum-w-cond {{
+    font-size: 0.55rem;
+    opacity: 0.6;
+    text-align: right;
+    flex: 1;
+}}
+/* Drive panel */
+.sum-d-list {{ display: flex; flex-direction: column; gap: 0.5rem; }}
+.sum-d-row {{
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #161616;
+}}
+.sum-d-row:last-child {{ border-bottom: none; }}
+.sum-d-label {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.56rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: #555;
+    flex: 1;
+}}
+.sum-d-time {{
+    font-family: 'Playfair Display', serif;
+    font-size: 1.4rem;
+    font-weight: 700;
+    line-height: 1;
+}}
+.sum-d-unit {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.55rem;
+    color: #555;
+    margin-left: 0.15rem;
+}}
+.sum-d-dist {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.55rem;
+    color: #444;
+}}
+/* Stories panel */
+.sum-stories {{ display: flex; flex-direction: column; gap: 0; }}
+.sum-story {{
+    padding: 0.55rem 0;
+    border-bottom: 1px solid #161616;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+}}
+.sum-story:last-child {{ border-bottom: none; }}
+.sum-story-src {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.52rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: #444;
+}}
+.sum-story-link {{
+    font-size: 0.8rem;
+    line-height: 1.4;
+    color: #aaa8a0;
+    text-decoration: none;
+    transition: color 0.15s;
+}}
+.sum-story-link:hover {{ color: #f5f3ee; }}
+
+/* Summary Email */
+.sum-em-list {{ display: flex; flex-direction: column; gap: 0; }}
+.sum-em-row {{
+    display: grid;
+    grid-template-columns: 8px 1fr auto;
+    grid-template-rows: auto auto;
+    column-gap: 0.5rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid #161616;
+    align-items: center;
+}}
+.sum-em-row:last-child {{ border-bottom: none; }}
+.sum-em-dot {{
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #c9a84c;
+    grid-row: 1 / 3;
+    align-self: center;
+}}
+.sum-em-sender {{
+    font-family: 'DM Mono', monospace;
+    font-size: 0.58rem;
+    color: #777;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }}
-
-.schwab-price {{
-    font-family: 'Playfair Display', serif;
-    font-size: 1.4rem;
-    font-weight: 700;
-    color: #f5f3ee;
-    margin-bottom: 0.15rem;
+.sum-em-subject {{
+    font-size: 0.72rem;
+    color: #aaa8a0;
+    grid-column: 2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }}
-
-.schwab-value {{
+.sum-em-time {{
     font-family: 'DM Mono', monospace;
-    font-size: 0.65rem;
-    color: #666;
-    margin-bottom: 0.5rem;
-}}
-
-.schwab-qty {{
+    font-size: 0.52rem;
     color: #444;
-}}
-
-.schwab-pl-row {{
-    display: flex;
-    justify-content: space-between;
-    font-family: 'DM Mono', monospace;
-    font-size: 0.6rem;
-    border-top: 1px solid #1a1a1a;
-    padding-top: 0.5rem;
-    margin-top: 0.2rem;
+    grid-row: 1;
+    grid-column: 3;
+    white-space: nowrap;
 }}
 
 /* Drive Home */
@@ -1068,9 +1648,10 @@ body {{
     .cols-2, .cols-3, .cols-4 {{
         grid-template-columns: 1fr;
     }}
-    .schwab-grid {{
-        grid-template-columns: repeat(2, 1fr);
-    }}
+    .summary-grid {{ grid-template-columns: 1fr 1fr; gap: 1rem; row-gap: 1.2rem; }}
+    .portfolio-treemap {{ gap: 0.3rem; }}
+    .ptile {{ min-height: 120px; padding: 0.8rem; }}
+    .ptile-price {{ font-size: 1.3rem; }}
     .pills-bar {{
         gap: 0.4rem;
         margin-bottom: 1.2rem;
@@ -1095,10 +1676,9 @@ body {{
     .masthead-title {{
         font-size: 1.7rem;
     }}
+    .summary-grid {{ grid-template-columns: 1fr; row-gap: 1.2rem; }}
     .weather-treemap {{ grid-template-columns: repeat(2, 1fr); }}
-    .schwab-grid {{
-        grid-template-columns: 1fr 1fr;
-    }}
+    .ptile-price {{ font-size: 1.1rem; }}
     .wtile-temp {{ font-size: 1.6rem; }}
 }}
 </style>
@@ -1115,6 +1695,8 @@ body {{
 </div>
 
 {pills_html}
+
+{summary_section}
 
 {drive_section}
 
