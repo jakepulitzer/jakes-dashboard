@@ -124,13 +124,14 @@ def get_schwab_positions():
         resp.raise_for_status()
         accounts = resp.json()
 
-        accounts_data = []
+        # First pass: collect all positions across accounts
+        raw_accounts = []
+        all_symbols = set()
         for account in accounts:
             acct = account.get("securitiesAccount", {})
             acct_number = acct.get("accountNumber", "")
             last4 = acct_number[-4:] if acct_number else "??"
-            label = ACCOUNT_LABELS.get(last4, f"Account (···{last4})")  # add unknown accounts to ACCOUNT_LABELS if needed
-
+            label = ACCOUNT_LABELS.get(last4, f"Account (···{last4})")
             positions = []
             for pos in acct.get("positions", []):
                 instrument = pos.get("instrument", {})
@@ -140,8 +141,6 @@ def get_schwab_positions():
                 qty = pos.get("longQuantity") or pos.get("quantity") or 0
                 avg_price = pos.get("averageLongPrice") or pos.get("averagePrice") or 0
                 market_value = pos.get("marketValue") or 0
-                day_pl = pos.get("currentDayProfitLoss") or 0
-                day_pl_pct = pos.get("currentDayProfitLossPercentage") or 0
                 total_pl = pos.get("longOpenProfitLoss") or 0
                 current_price = market_value / qty if qty else 0
                 total_pl_pct = ((market_value - (avg_price * qty)) / (avg_price * qty) * 100) if avg_price and qty else 0
@@ -152,15 +151,40 @@ def get_schwab_positions():
                     "avg_price": avg_price,
                     "current_price": current_price,
                     "market_value": market_value,
-                    "day_pl": day_pl,
-                    "day_pl_pct": day_pl_pct,
+                    "day_pl": 0,
+                    "day_pl_pct": 0,
                     "total_pl": total_pl,
                     "total_pl_pct": total_pl_pct,
                 })
-
+                all_symbols.add(symbol)
             if positions:
-                positions.sort(key=lambda x: x["market_value"], reverse=True)
-                accounts_data.append({"label": label, "positions": positions})
+                raw_accounts.append({"label": label, "positions": positions})
+
+        # Fetch quotes to get accurate day change (netChange = price change today per share)
+        quotes = {}
+        if all_symbols:
+            try:
+                q_resp = client.get_quotes(list(all_symbols))
+                q_resp.raise_for_status()
+                q_data = q_resp.json()
+                for sym, info in q_data.items():
+                    q = info.get("quote", {})
+                    net = q.get("netChange") or q.get("regularMarketNetChange") or 0
+                    net_pct = q.get("netPercentChange") or q.get("regularMarketPercentChange") or 0
+                    quotes[sym] = {"netChange": net, "netPercentChange": net_pct}
+            except Exception:
+                pass  # fall back to 0 day P&L if quotes fail
+
+        # Second pass: apply accurate day P&L from quotes
+        accounts_data = []
+        for acct in raw_accounts:
+            for pos in acct["positions"]:
+                sym = pos["symbol"]
+                if sym in quotes:
+                    pos["day_pl"] = quotes[sym]["netChange"] * pos["qty"]
+                    pos["day_pl_pct"] = quotes[sym]["netPercentChange"]
+            acct["positions"].sort(key=lambda x: x["market_value"], reverse=True)
+            accounts_data.append(acct)
 
         return accounts_data, None
     except ImportError:
@@ -227,7 +251,7 @@ def build_treemap(positions):
     return f'<div class="portfolio-treemap">{tiles}</div>'
 
 
-def build_acct_summary(positions, label=None, debug=False):
+def build_acct_summary(positions, label=None):
     """Build a summary line showing day % and $ for a set of positions."""
     day_pl = sum(p["day_pl"] for p in positions)
     mv = sum(p["market_value"] for p in positions)
@@ -236,15 +260,9 @@ def build_acct_summary(positions, label=None, debug=False):
     color = "#4caf80" if day_pl >= 0 else "#e05c5c"
     sign = "+" if day_pl >= 0 else ""
     label_html = f'<span class="acct-summary-label">{label}</span> &nbsp; ' if label else ""
-    # Temporary debug: show raw per-position day_pl values
-    debug_html = ""
-    if debug:
-        rows = "".join(f'<div style="font-size:0.5rem;color:#444;">{p["symbol"]}: day_pl={p["day_pl"]}, mv={p["market_value"]}</div>' for p in positions)
-        debug_html = f'<div style="margin-top:0.3rem;">{rows}</div>'
     return f"""<div class="acct-summary">
         {label_html}<span style="color:{color};">{sign}{day_pct:.2f}%</span>
         <span style="color:{color}; opacity:0.7;"> &nbsp; {sign}${day_pl:,.2f} today</span>
-        {debug_html}
     </div>"""
 
 
@@ -268,7 +286,7 @@ def build_schwab_section(accounts_data, error):
 
         # One treemap per account with its own summary
         for acct in accounts_data:
-            content += build_acct_summary(acct["positions"], label=acct["label"], debug=True)
+            content += build_acct_summary(acct["positions"], label=acct["label"])
             content += build_treemap(acct["positions"])
 
     return f"""
