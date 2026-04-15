@@ -137,12 +137,12 @@ def get_schwab_positions():
                 symbol = instrument.get("symbol", "")
                 if not symbol or instrument.get("assetType") == "CASH_EQUIVALENT":
                     continue
-                qty = pos.get("longQuantity", 0)
-                avg_price = pos.get("averageLongPrice") or pos.get("averagePrice", 0)
-                market_value = pos.get("marketValue", 0)
-                day_pl = pos.get("currentDayProfitLoss", 0)
-                day_pl_pct = pos.get("currentDayProfitLossPercentage", 0)
-                total_pl = pos.get("longOpenProfitLoss", 0)
+                qty = pos.get("longQuantity") or pos.get("quantity") or 0
+                avg_price = pos.get("averageLongPrice") or pos.get("averagePrice") or 0
+                market_value = pos.get("marketValue") or 0
+                day_pl = pos.get("currentDayProfitLoss") or 0
+                day_pl_pct = pos.get("currentDayProfitLossPercentage") or 0
+                total_pl = pos.get("longOpenProfitLoss") or 0
                 current_price = market_value / qty if qty else 0
                 total_pl_pct = ((market_value - (avg_price * qty)) / (avg_price * qty) * 100) if avg_price and qty else 0
                 positions.append({
@@ -227,7 +227,7 @@ def build_treemap(positions):
     return f'<div class="portfolio-treemap">{tiles}</div>'
 
 
-def build_acct_summary(positions, label=None):
+def build_acct_summary(positions, label=None, debug=False):
     """Build a summary line showing day % and $ for a set of positions."""
     day_pl = sum(p["day_pl"] for p in positions)
     mv = sum(p["market_value"] for p in positions)
@@ -236,9 +236,15 @@ def build_acct_summary(positions, label=None):
     color = "#4caf80" if day_pl >= 0 else "#e05c5c"
     sign = "+" if day_pl >= 0 else ""
     label_html = f'<span class="acct-summary-label">{label}</span> &nbsp; ' if label else ""
+    # Temporary debug: show raw per-position day_pl values
+    debug_html = ""
+    if debug:
+        rows = "".join(f'<div style="font-size:0.5rem;color:#444;">{p["symbol"]}: day_pl={p["day_pl"]}, mv={p["market_value"]}</div>' for p in positions)
+        debug_html = f'<div style="margin-top:0.3rem;">{rows}</div>'
     return f"""<div class="acct-summary">
         {label_html}<span style="color:{color};">{sign}{day_pct:.2f}%</span>
         <span style="color:{color}; opacity:0.7;"> &nbsp; {sign}${day_pl:,.2f} today</span>
+        {debug_html}
     </div>"""
 
 
@@ -262,7 +268,7 @@ def build_schwab_section(accounts_data, error):
 
         # One treemap per account with its own summary
         for acct in accounts_data:
-            content += build_acct_summary(acct["positions"], label=acct["label"])
+            content += build_acct_summary(acct["positions"], label=acct["label"], debug=True)
             content += build_treemap(acct["positions"])
 
     return f"""
