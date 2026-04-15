@@ -124,7 +124,7 @@ def get_schwab_positions():
         resp.raise_for_status()
         accounts = resp.json()
 
-        # First pass: collect all positions across accounts
+        # First pass: collect all positions and account-level balances
         raw_accounts = []
         all_symbols = set()
         for account in accounts:
@@ -132,6 +132,16 @@ def get_schwab_positions():
             acct_number = acct.get("accountNumber", "")
             last4 = acct_number[-4:] if acct_number else "??"
             label = ACCOUNT_LABELS.get(last4, f"Account (···{last4})")
+
+            # Use Schwab's currentBalances for accurate total value
+            balances = acct.get("currentBalances", {})
+            acct_total_value = (
+                balances.get("liquidationValue") or
+                balances.get("equity") or
+                balances.get("accountValue") or
+                0
+            )
+
             positions = []
             for pos in acct.get("positions", []):
                 instrument = pos.get("instrument", {})
@@ -158,7 +168,7 @@ def get_schwab_positions():
                 })
                 all_symbols.add(symbol)
             if positions:
-                raw_accounts.append({"label": label, "positions": positions})
+                raw_accounts.append({"label": label, "positions": positions, "total_value": acct_total_value})
 
         # Fetch quotes to get accurate day change (netChange = price change today per share)
         quotes = {}
@@ -251,17 +261,18 @@ def build_treemap(positions):
     return f'<div class="portfolio-treemap">{tiles}</div>'
 
 
-def build_acct_summary(positions, label=None):
-    """Build a summary line showing day % and $ for a set of positions."""
+def build_acct_summary(positions, label=None, total_value=None):
+    """Build a summary line showing total value + day % and $ for a set of positions."""
     day_pl = sum(p["day_pl"] for p in positions)
-    mv = sum(p["market_value"] for p in positions)
+    mv = total_value or sum(p["market_value"] for p in positions)
     prev_mv = mv - day_pl
     day_pct = (day_pl / prev_mv * 100) if prev_mv else 0
     color = "#4caf80" if day_pl >= 0 else "#e05c5c"
     sign = "+" if day_pl >= 0 else ""
     label_html = f'<span class="acct-summary-label">{label}</span> &nbsp; ' if label else ""
+    value_html = f'<span style="color:#f5f3ee;">${mv:,.0f}</span> &nbsp; ' if mv else ""
     return f"""<div class="acct-summary">
-        {label_html}<span style="color:{color};">{sign}{day_pct:.2f}%</span>
+        {label_html}{value_html}<span style="color:{color};">{sign}{day_pct:.2f}%</span>
         <span style="color:{color}; opacity:0.7;"> &nbsp; {sign}${day_pl:,.2f} today</span>
     </div>"""
 
@@ -275,9 +286,10 @@ def build_schwab_section(accounts_data, error):
         content = '<div class="no-feed">No positions found</div>'
     else:
         all_positions = [p for acct in accounts_data for p in acct["positions"]]
+        total_value_all = sum(acct.get("total_value") or sum(p["market_value"] for p in acct["positions"]) for acct in accounts_data)
 
         # Overall summary across all accounts
-        summary = build_acct_summary(all_positions)
+        summary = build_acct_summary(all_positions, total_value=total_value_all)
 
         # Rollup treemap
         rollup = build_rollup(accounts_data)
@@ -286,7 +298,7 @@ def build_schwab_section(accounts_data, error):
 
         # One treemap per account with its own summary
         for acct in accounts_data:
-            content += build_acct_summary(acct["positions"], label=acct["label"])
+            content += build_acct_summary(acct["positions"], label=acct["label"], total_value=acct.get("total_value"))
             content += build_treemap(acct["positions"])
 
     return f"""
@@ -527,7 +539,7 @@ def _summary_portfolio(accounts_data):
     if not accounts_data:
         return '<div class="sum-empty">Portfolio unavailable</div>'
     all_pos = [p for acct in accounts_data for p in acct["positions"]]
-    total_mv = sum(p["market_value"] for p in all_pos)
+    total_mv = sum(acct.get("total_value") or sum(p["market_value"] for p in acct["positions"]) for acct in accounts_data)
     total_day_pl = sum(p["day_pl"] for p in all_pos)
     prev_mv = total_mv - total_day_pl
     total_pct = (total_day_pl / prev_mv * 100) if prev_mv else 0
@@ -541,7 +553,7 @@ def _summary_portfolio(accounts_data):
     stack_segs = ""
     legend_rows = ""
     for i, acct in enumerate(accounts_data):
-        acct_mv = sum(p["market_value"] for p in acct["positions"])
+        acct_mv = acct.get("total_value") or sum(p["market_value"] for p in acct["positions"])
         acct_day_pl = sum(p["day_pl"] for p in acct["positions"])
         prev = acct_mv - acct_day_pl
         acct_pct = (acct_day_pl / prev * 100) if prev else 0
