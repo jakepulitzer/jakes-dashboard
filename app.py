@@ -427,19 +427,12 @@ def get_gmail_summary():
         all_ids = all_data[0].split()
         recent_ids = all_ids[-8:][::-1]
 
-        # Batch fetch all emails in one IMAP round-trip
-        if not recent_ids:
-            mail.logout()
-            return {"unread_count": unread_count, "emails": []}, None
-        batch_ids = b",".join(recent_ids)
-        _, msg_data_list = mail.fetch(batch_ids, "(RFC822)")
-        mail.logout()
-
         emails = []
-        raw_msgs = [msg_data_list[i] for i in range(0, len(msg_data_list), 2) if msg_data_list[i] is not None]
-        for i, raw in enumerate(raw_msgs):
-            eid = recent_ids[i] if i < len(recent_ids) else b""
-            msg = email_lib.message_from_bytes(raw[1])
+        for eid in recent_ids:
+            _, msg_data = mail.fetch(eid, "(RFC822)")
+            if not msg_data or not msg_data[0]:
+                continue
+            msg = email_lib.message_from_bytes(msg_data[0][1])
             subject = decode_str(msg.get("Subject", "(no subject)"))[:80]
             sender_raw = decode_str(msg.get("From", ""))
             # Extract just the name if present: "Name <email>" → "Name"
@@ -464,6 +457,7 @@ def get_gmail_summary():
                 "unread": eid in unread_ids,
             })
 
+        mail.logout()
         return {"unread_count": unread_count, "emails": emails}, None
     except Exception as e:
         return None, str(e)
